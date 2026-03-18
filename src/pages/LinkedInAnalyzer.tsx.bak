@@ -1,0 +1,251 @@
+﻿import React, { useState } from 'react';
+import { Link, Send, Loader2, Check, AlertCircle, Wifi, WifiOff, Terminal } from 'lucide-react';
+import { motion } from 'motion/react';
+import { analyzeLinkedIn, checkConnection, getLogs, clearLogs } from '../services/openclaw';
+
+interface LinkedInAnalyzerProps {
+  onAnalyze?: (data: any) => void;
+}
+
+export default function LinkedInAnalyzer({ onAnalyze }: LinkedInAnalyzerProps) {
+  const [linkedInUrl, setLinkedInUrl] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<any>(null);
+  const [isConnected, setIsConnected] = useState<boolean | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [logs, setLogs] = useState<any[]>([]);
+
+  React.useEffect(() => {
+    checkConnection()
+      .then(setIsConnected)
+      .catch(() => setIsConnected(false));
+  }, []);
+
+  React.useEffect(() => {
+    if (showLogs) {
+      const interval = setInterval(() => setLogs(getLogs()), 1000);
+      return () => clearInterval(interval);
+    }
+  }, [showLogs]);
+
+  const isValidLinkedInUrl = (url: string) => {
+    return url.includes('linkedin.com/in/') || url.includes('linkedin.com/pub/');
+  };
+
+  const handleAnalyze = async () => {
+    if (!linkedInUrl.trim()) {
+      setError('Please enter a LinkedIn URL');
+      setStatus('error');
+      return;
+    }
+
+    if (!isValidLinkedInUrl(linkedInUrl)) {
+      setError('Please enter a valid LinkedIn profile URL');
+      setStatus('error');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setStatus('idle');
+    setError('');
+
+    try {
+      const parsed = await analyzeLinkedIn(linkedInUrl);
+      setResult(parsed);
+      setStatus('success');
+      onAnalyze?.(parsed);
+    } catch (err: any) {
+      setError(err.message || 'Failed to analyze profile');
+      setStatus('error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto py-8">
+      <div className="text-center mb-8">
+        <h2 className="text-2xl font-bold text-white mb-2">
+          LinkedIn Profile Analyzer
+        </h2>
+        <p className="text-zinc-400">
+          Enter a LinkedIn profile URL to analyze skills and experience
+        </p>
+        
+        <div className="mt-4 flex justify-center items-center gap-4">
+          {isConnected === null ? (
+            <span className="text-zinc-500 text-sm">Checking connection...</span>
+          ) : isConnected ? (
+            <span className="flex items-center gap-1 text-emerald-500 text-sm">
+              <Wifi size={14} /> Connected to ETHV
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-red-500 text-sm">
+              <WifiOff size={14} /> Not connected
+            </span>
+          )}
+          
+          <button 
+            onClick={() => { setShowLogs(!showLogs); if(!showLogs) setLogs(getLogs()); }}
+            className="flex items-center gap-1 text-zinc-500 text-sm hover:text-white"
+          >
+            <Terminal size={14} /> {showLogs ? 'Hide' : 'Show'} Logs
+          </button>
+        </div>
+      </div>
+
+      {showLogs && (
+        <div className="mb-6 bg-zinc-900 rounded-xl p-4 max-h-64 overflow-auto">
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-zinc-400 text-sm font-bold">Debug Logs</span>
+            <button onClick={clearLogs} className="text-zinc-500 text-xs hover:text-white">Clear</button>
+          </div>
+          {logs.length === 0 ? (
+            <p className="text-zinc-600 text-sm">No logs yet...</p>
+          ) : (
+            logs.map((log, i) => (
+              <div key={i} className="text-xs font-mono mb-1">
+                <span className="text-zinc-500">[{log.time?.slice(11,19)}]</span>{' '}
+                <span className={log.level === 'ERROR' ? 'text-red-400' : log.level === 'WARN' ? 'text-yellow-400' : 'text-zinc-400'}>{log.level}</span>{' '}
+                <span className="text-zinc-300">{log.message}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-6">
+        <label className="block text-sm font-medium text-zinc-400 mb-2">
+          LinkedIn Profile URL
+        </label>
+        
+        <div className="flex gap-3">
+          <div className="flex-1 relative">
+            <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={20} />
+            <input
+              type="url"
+              value={linkedInUrl}
+              onChange={(e) => {
+                setLinkedInUrl(e.target.value);
+                setStatus('idle');
+                setError('');
+              }}
+              placeholder="https://linkedin.com/in/yourprofile"
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 pl-10 pr-4 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 transition-colors"
+            />
+          </div>
+          
+          <button
+            onClick={handleAnalyze}
+            disabled={isAnalyzing || !linkedInUrl}
+            className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-bold py-3 px-6 rounded-xl transition-all flex items-center gap-2"
+          >
+            {isAnalyzing ? (
+              <>
+                <Loader2 className="animate-spin" size={20} />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <Send size={20} />
+                Analyze
+              </>
+            )}
+          </button>
+        </div>
+
+        {error && (
+          <div className="mt-4 bg-red-500/10 border border-red-500/20 p-3 rounded-xl text-red-400 text-sm flex items-center gap-2">
+            <AlertCircle size={16} />
+            {error}
+          </div>
+        )}
+
+        {status === 'success' && result && (
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 space-y-4"
+          >
+            <div className="flex items-center gap-2 text-emerald-500">
+              <Check size={20} />
+              <span className="font-bold">Analysis Complete</span>
+            </div>
+
+            {result.headline && (
+              <div className="bg-zinc-900/50 p-4 rounded-xl">
+                <h4 className="text-zinc-400 text-sm mb-2">Headline</h4>
+                <p className="text-white">{result.headline}</p>
+              </div>
+            )}
+
+            {result.summary && (
+              <div className="bg-zinc-900/50 p-4 rounded-xl">
+                <h4 className="text-zinc-400 text-sm mb-2">Summary</h4>
+                <p className="text-white">{result.summary}</p>
+              </div>
+            )}
+
+            {result.skills?.length > 0 && (
+              <div>
+                <h4 className="text-zinc-400 text-sm mb-2">Skills ({result.skills.length})</h4>
+                <div className="flex flex-wrap gap-2">
+                  {result.skills.map((skill: string, i: number) => (
+                    <span key={i} className="bg-zinc-900 border border-zinc-800 text-zinc-300 px-3 py-1 rounded-lg text-sm">
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {result.experience_years > 0 && (
+              <div className="bg-zinc-900/50 p-4 rounded-xl">
+                <h4 className="text-zinc-400 text-sm mb-1">Experience</h4>
+                <p className="text-white font-bold text-lg">{result.experience_years} years</p>
+              </div>
+            )}
+
+            {result.education?.length > 0 && (
+              <div>
+                <h4 className="text-zinc-400 text-sm mb-2">Education</h4>
+                {result.education.map((edu: string, i: number) => (
+                  <p key={i} className="text-white text-sm">{edu}</p>
+                ))}
+              </div>
+            )}
+
+            {result.certifications?.length > 0 && (
+              <div>
+                <h4 className="text-zinc-400 text-sm mb-2">Certifications</h4>
+                <div className="flex flex-wrap gap-2">
+                  {result.certifications.map((cert: string, i: number) => (
+                    <span key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded-lg text-sm">
+                      {cert}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {result.location && (
+              <div className="text-zinc-500 text-sm">
+                📍 {result.location}
+              </div>
+            )}
+
+            <button className="w-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 py-3 rounded-xl hover:bg-emerald-500/20 transition-colors">
+              Proceed to Validation
+            </button>
+          </motion.div>
+        )}
+      </div>
+
+      <p className="text-center text-zinc-500 text-sm mt-4">
+        💡 Tip: Use your public LinkedIn profile URL for best results
+      </p>
+    </div>
+  );
+}

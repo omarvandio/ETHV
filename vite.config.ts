@@ -16,9 +16,32 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
+      // Proxy to OpenClaw gateway
+      proxy: {
+        '/v1': {
+          target: 'http://localhost:3002',
+          changeOrigin: true
+        },
+        '/hooks': {
+          target: 'http://localhost:3002',
+          changeOrigin: true
+        },
+        '/health': {
+          target: 'http://localhost:3002',
+          changeOrigin: true
+        }
+      }
+    },
+    // Security: Configure headers for production
+    preview: {
+      headers: {
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'X-XSS-Protection': '1; mode=block',
+        'Referrer-Policy': 'strict-origin-when-cross-origin',
+        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*;"
+      },
     },
   };
 });

@@ -1,0 +1,248 @@
+import React, { useState } from 'react';
+import { Link2, Send, Loader2, Check, AlertCircle, Globe, FileText, Copy } from 'lucide-react';
+import { motion } from 'motion/react';
+
+export default function LinkedInAnalyzer() {
+  const [inputMode, setInputMode] = useState<'url' | 'text'>('url');
+  const [linkedInUrl, setLinkedInUrl] = useState('');
+  const [profileText, setProfileText] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<any>(null);
+
+  const isValidLinkedInUrl = (url: string) => url.toLowerCase().includes('linkedin.com');
+
+  const handleAnalyze = async () => {
+    const content = inputMode === 'url' ? linkedInUrl : profileText;
+    
+    if (!content.trim()) {
+      setError(inputMode === 'url' ? 'Enter a LinkedIn URL' : 'Paste profile content');
+      setStatus('error');
+      return;
+    }
+
+    if (inputMode === 'url' && !isValidLinkedInUrl(content)) {
+      setError('Invalid LinkedIn URL');
+      setStatus('error');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setStatus('idle');
+    setError('');
+
+    const prompt = inputMode === 'url' 
+      ? `Analyze this LinkedIn URL and provide information: ${content}`
+      : `You are ETHV, a talent validation agent. Analyze this LinkedIn profile content and extract: ${content}`;
+
+    try {
+      const response = await fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer bd1177ff2d28a2c4ceew1e08fee975fc9',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'MiniMax-M2.5',
+          messages: [{
+            role: 'user',
+            content: `You are ETHV, a Web3 talent validation agent.
+
+Analyze the following LinkedIn content and extract:
+
+${inputMode === 'url' ? `LinkedIn URL: ${content}\n\nNote: If the URL is not accessible, ask the user to paste the profile content.` : `LinkedIn Profile Content:\n${content.slice(0, 5000)}`}
+
+Provide JSON with:
+{
+  "skills": ["technical skills found"],
+  "experience_years": estimated_years,
+  "education": ["degrees, universities"],
+  "certifications": ["certifications if any"],
+  "summary": "2-3 sentence professional summary",
+  "web3_relevance": "how relevant for Web3 jobs (high/medium/low)",
+  "recommended_roles": ["job titles that match"]
+}
+
+If you cannot extract data (blocked content), return:
+{"error": "blocked", "message": "explain why"}`
+          }],
+          max_tokens: 2000
+        })
+      });
+
+      if (!response.ok) throw new Error('Analysis failed');
+
+      const data = await response.json();
+      const content2 = data.choices?.[0]?.message?.content || '';
+
+      try {
+        const match = content2.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.error) {
+            setError(parsed.message);
+            setStatus('error');
+          } else {
+            setResult(parsed);
+            setStatus('success');
+          }
+        }
+      } catch {
+        setResult({ summary: content2 });
+        setStatus('success');
+      }
+
+    } catch (err: any) {
+      setError(err.message || 'Analysis failed');
+      setStatus('error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto py-8">
+      <div className="text-center mb-8">
+        <Globe className="w-12 h-12 mx-auto mb-4 text-emerald-500" />
+        <h2 className="text-2xl font-bold text-white mb-2">LinkedIn Analyzer</h2>
+        <p className="text-zinc-400">Extract skills and validate talent from LinkedIn</p>
+      </div>
+
+      {/* Mode Toggle */}
+      <div className="flex justify-center mb-6">
+        <div className="bg-zinc-900 p-1 rounded-xl flex gap-1">
+          <button
+            onClick={() => { setInputMode('url'); setStatus('idle'); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${inputMode === 'url' ? 'bg-emerald-500 text-black' : 'text-zinc-400 hover:text-white'}`}
+          >
+            <Link2 className="inline w-4 h-4 mr-1" />
+            URL
+          </button>
+          <button
+            onClick={() => { setInputMode('text'); setStatus('idle'); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${inputMode === 'text' ? 'bg-emerald-500 text-black' : 'text-zinc-400 hover:text-white'}`}
+          >
+            <FileText className="inline w-4 h-4 mr-1" />
+            Paste Text
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-6">
+        {inputMode === 'url' ? (
+          <div className="space-y-2">
+            <label className="text-sm text-zinc-400">LinkedIn Profile URL</label>
+            <input
+              type="url"
+              value={linkedInUrl}
+              onChange={(e) => { setLinkedInUrl(e.target.value); setStatus('idle'); setError(''); }}
+              placeholder="https://linkedin.com/in/yourprofile"
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 px-4 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
+            />
+            <p className="text-xs text-zinc-500">
+              💡 Tip: If URL is blocked, switch to "Paste Text" mode below
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <label className="text-sm text-zinc-400">Paste LinkedIn Profile Content</label>
+            <textarea
+              value={profileText}
+              onChange={(e) => { setProfileText(e.target.value); setStatus('idle'); setError(''); }}
+              placeholder="Paste the profile text here... (name, headline, about, experience, skills, education)"
+              rows={8}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 px-4 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 resize-none"
+            />
+            <p className="text-xs text-zinc-500">
+              💡 Copy and paste the profile content manually for best results
+            </p>
+          </div>
+        )}
+
+        <button
+          onClick={handleAnalyze}
+          disabled={isAnalyzing}
+          className="w-full mt-4 bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+        >
+          {isAnalyzing ? <Loader2 className="animate-spin" /> : <Send />}
+          {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+        </button>
+
+        {error && (
+          <div className="mt-4 bg-red-500/10 border border-red-500/20 p-3 rounded-xl text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        {status === 'success' && result && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-6 space-y-4">
+            <div className="flex items-center gap-2 text-emerald-500">
+              <Check size={20} />
+              <span className="font-bold">Analysis Complete</span>
+            </div>
+
+            {result.summary && (
+              <div className="bg-zinc-900/50 p-4 rounded-xl border-l-4 border-emerald-500">
+                <p className="text-white">{result.summary}</p>
+              </div>
+            )}
+
+            {result.skills?.length > 0 && (
+              <div>
+                <h4 className="text-zinc-400 text-sm mb-2">Skills ({result.skills.length})</h4>
+                <div className="flex flex-wrap gap-2">
+                  {result.skills.map((s: string, i: number) => (
+                    <span key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded-lg text-sm">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {result.experience_years > 0 && (
+              <div className="bg-zinc-900/50 p-4 rounded-xl">
+                <h4 className="text-zinc-400 text-sm">Experience</h4>
+                <p className="text-white font-bold text-lg">{result.experience_years} years</p>
+              </div>
+            )}
+
+            {result.education?.length > 0 && (
+              <div>
+                <h4 className="text-zinc-400 text-sm mb-2">Education</h4>
+                {result.education.map((e: string, i: number) => (
+                  <p key={i} className="text-white text-sm">{e}</p>
+                ))}
+              </div>
+            )}
+
+            {result.web3_relevance && (
+              <div className={`p-4 rounded-xl ${result.web3_relevance === 'high' ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-zinc-900/50'}`}>
+                <h4 className="text-zinc-400 text-sm">Web3 Relevance</h4>
+                <p className={`font-bold ${result.web3_relevance === 'high' ? 'text-emerald-400' : result.web3_relevance === 'medium' ? 'text-yellow-400' : 'text-zinc-400'}`}>
+                  {result.web3_relevance.toUpperCase()}
+                </p>
+              </div>
+            )}
+
+            {result.recommended_roles?.length > 0 && (
+              <div>
+                <h4 className="text-zinc-400 text-sm mb-2">Recommended Roles</h4>
+                <div className="flex flex-wrap gap-2">
+                  {result.recommended_roles.map((r: string, i: number) => (
+                    <span key={i} className="bg-zinc-800 text-zinc-300 px-3 py-1 rounded-lg text-sm">{r}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <button className="w-full bg-emerald-500 text-black font-bold py-3 rounded-xl hover:bg-emerald-600 transition-colors">
+              Proceed to Validation
+            </button>
+          </motion.div>
+        )}
+      </div>
+    </div>
+  );
+}

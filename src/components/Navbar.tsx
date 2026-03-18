@@ -1,12 +1,12 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useWallet } from '../hooks/useWallet';
 import { useAuth } from '../store/AuthContext';
-import { LogOut, LayoutDashboard, FileUp, CheckCircle, Briefcase, Menu, X } from 'lucide-react';
+import { LogOut, LayoutDashboard, FileUp, CheckCircle, Briefcase, Menu, X, Globe } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '../utils/cn';
 
 export default function Navbar() {
-  const { address, isConnected, logout } = useWallet();
+  const { address, isConnected, logout } = useWallet()
   const { isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -19,6 +19,7 @@ export default function Navbar() {
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard, protected: true },
     { name: 'Upload CV', path: '/upload', icon: FileUp, protected: true },
+    { name: 'LinkedIn', path: '/linkedin', icon: Globe, protected: true },
     { name: 'Validation', path: '/validation', icon: CheckCircle, protected: true },
     { name: 'Opportunities', path: '/opportunities', icon: Briefcase, protected: true },
   ];

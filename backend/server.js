@@ -1,47 +1,91 @@
 const express = require('express');
+const cors = require('cors');
+const http = require('http');
 const { Client, GatewayIntentBits } = require('discord.js');
-const { handleMessage } = require('./commands');
-const { evaluateSurvival } = require('./survival-rules');
 
 const app = express();
-app.use(express.json());
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3002;
 
-// Discord bot
-const client = new Client({
+app.use(cors());
+app.use(express.json());
+
+const discordClient = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.MessageContent
   ]
 });
 
-client.on('ready', () => {
-  console.log(`[ETHV] Bot online: ${client.user.tag}`);
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (!message.content.startsWith('/')) return;
-
-  const response = await handleMessage({
-    text: message.content,
-    userId: message.author.id,
-    channelId: message.channelId,
-  });
-
-  if (response?.text) {
-    await message.channel.send(response.text);
+app.post('/v1/chat/completions', async (req, res) => {
+  try {
+    const response = await fetch('http://localhost:18789/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer bd1177ff2d28a2c4ceew1e08fee975fc9'
+      },
+      body: JSON.stringify(req.body)
+    });
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Error proxying to OpenClaw gateway:', error);
+    res.status(500).json({ error: 'Failed to proxy request' });
   }
 });
 
-app.get('/', (req, res) => res.json({ agent: 'ETHV', status: 'online' }));
+app.post('/api/analyze-linkedin', async (req, res) => {
+  try {
+    const { profileUrl, profileData } = req.body;
+    
+    const analysis = {
+      profileUrl: profileUrl || 'provided',
+      skills: profileData?.skills || [],
+      experience: profileData?.experience || [],
+      recommendations: [],
+      score: 0
+    };
+    
+    if (profileData?.skills) {
+      analysis.score += profileData.skills.length * 10;
+    }
+    if (profileData?.experience) {
+      analysis.score += profileData.experience.length * 15;
+    }
+    
+    if (analysis.score < 30) {
+      analysis.recommendations.push('Consider adding more skills to your profile');
+    }
+    if (!profileData?.experience || profileData.experience.length < 2) {
+      analysis.recommendations.push('Add more work experience to increase visibility');
+    }
+    
+    res.json({ success: true, analysis });
+  } catch (error) {
+    console.error('Error analyzing LinkedIn profile:', error);
+    res.status(500).json({ success: false, error: 'Failed to analyze profile' });
+  }
+});
 
-app.listen(PORT, () => console.log(`[ETHV] Server en puerto ${PORT}`));
+const server = app.listen(PORT, () => {
+  console.log('ETHV Backend server running on port ' + PORT);
+  console.log('Health endpoint: http://localhost:' + PORT + '/health');
+  console.log('Chat completions: http://localhost:' + PORT + '/v1/chat/completions');
+  console.log('LinkedIn analysis: http://localhost:' + PORT + '/api/analyze-linkedin');
+});
 
-const token = process.env.DISCORD_BOT_TOKEN;
-if (token) {
-  client.login(token);
-} else {
-  console.error('[ETHV] DISCORD_BOT_TOKEN no configurado');
-}
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    discordClient.destroy();
+    process.exit(0);
+  });
+});
+
+module.exports = app;

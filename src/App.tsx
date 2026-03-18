@@ -18,6 +18,7 @@ import Dashboard from './pages/Dashboard';
 import CVUpload from './pages/CVUpload';
 import Validation from './pages/Validation';
 import Opportunities from './pages/Opportunities';
+import LinkedInAnalyzer from './pages/LinkedInAnalyzer';
 
 // Create modal
 createWeb3Modal({
@@ -42,6 +43,7 @@ export default function App() {
             <MainLayout>
               <Routes>
                 <Route path="/" element={<Landing />} />
+                <Route path="/linkedin" element={<LinkedInAnalyzer />} />
                 
                 {/* Protected Routes */}
                 <Route element={<ProtectedRoute />}>
