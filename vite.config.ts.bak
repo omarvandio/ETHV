@@ -1,4 +1,4 @@
-﻿import tailwindcss from '@tailwindcss/vite';
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
@@ -17,26 +17,27 @@ export default defineConfig(({mode}) => {
     },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
-      port: 3000,
+      // Proxy to OpenClaw gateway
       proxy: {
         '/v1': {
-          target: 'http://localhost:3003',
+          target: 'http://localhost:3002',
           changeOrigin: true
         },
         '/api': {
-          target: 'http://localhost:3003',
+          target: 'http://localhost:3002',
           changeOrigin: true
         },
         '/hooks': {
-          target: 'http://localhost:3003',
+          target: 'http://localhost:3002',
           changeOrigin: true
         },
         '/health': {
-          target: 'http://localhost:3003',
+          target: 'http://localhost:3002',
           changeOrigin: true
         }
       }
     },
+    // Security: Configure headers for production
     preview: {
       headers: {
         'X-Content-Type-Options': 'nosniff',
@@ -48,3 +49,4 @@ export default defineConfig(({mode}) => {
     },
   };
 });
+

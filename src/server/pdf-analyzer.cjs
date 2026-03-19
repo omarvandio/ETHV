@@ -1,10 +1,10 @@
-// PDF Analyzer - sends PDF to OpenClaw for AI analysis
+// PDF Analyzer with Tesseract.js OCR - Simple Version
 const express = require('express');
 const fs = require('fs');
-const http = require('http');
+const { createWorker } = require('tesseract.js');
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 // CORS
 app.use((req, res, next) => {
@@ -15,21 +15,66 @@ app.use((req, res, next) => {
   next();
 });
 
-// Send PDF to OpenClaw for analysis
-async function analyzeWithOpenClaw(pdfBase64, filename) {
-  const token = 'bd1177ff2d28a2c4ceew1e08fee975fc9';
+// Extract text from file using Tesseract OCR
+async function extractWithOCR(fileBuffer, mimeType) {
+  console.log('Starting OCR with Tesseract.js...');
   
-  const prompt = `You are ETHV, a talent validation agent. Analyze this PDF CV/resume and extract:
+  const worker = await createWorker('spa+eng');
+  
+  try {
+    let result;
+    
+    if (mimeType === 'application/pdf') {
+      // For PDF, Tesseract can handle it directly in newer versions
+      result = await worker.recognize(fileBuffer);
+    } else if (mimeType.startsWith('image/')) {
+      // For images
+      result = await worker.recognize(fileBuffer);
+    } else if (mimeType === 'text/plain') {
+      // For text files, just return the content
+      return fileBuffer.toString('utf-8');
+    }
+    
+    await worker.terminate();
+    
+    return result.data.text;
+  } catch (error) {
+    await worker.terminate();
+    throw error;
+  }
+}
 
-1. Name
-2. Skills (technical skills, tools, languages, frameworks)
-3. Years of experience
-4. Education (degrees, universities)
-5. Certifications
-6. Work experience summary
-7. Web3 relevance (high/medium/low)
-
-Provide JSON response:
+// Analyze PDF with OpenClaw
+app.post('/api/analyze-pdf', async (req, res) => {
+  try {
+    const { file, filename } = req.body;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+    
+    const fileBuffer = Buffer.from(file, 'base64');
+    const mimeType = filename?.endsWith('.pdf') ? 'application/pdf' : 
+                     filename?.endsWith('.png') ? 'image/png' :
+                     filename?.endsWith('.jpg') || filename?.endsWith('.jpeg') ? 'image/jpeg' :
+                     'application/octet-stream';
+    
+    console.log('Analyzing PDF with Tesseract OCR...');
+    
+    // Use Tesseract to extract text
+    let extractedText;
+    try {
+      extractedText = await extractWithOCR(fileBuffer, mimeType);
+      console.log('OCR extracted text length:', extractedText.length);
+    } catch (ocrError) {
+      console.log('OCR error:', ocrError.message);
+      extractedText = 'OCR failed: ' + ocrError.message;
+    }
+    
+    // Send to OpenClaw for analysis
+    const token = 'bd1177ff2d28a2c4ceew1e08fee975fc9';
+    
+    const prompt = `You are ETHV, a talent validation agent. Analyze this resume/CV and extract:
 {
   "name": "...",
   "skills": [...],
@@ -38,82 +83,62 @@ Provide JSON response:
   "certifications": [...],
   "summary": "...",
   "web3_relevance": "high/medium/low"
-}`;
-
-  const pdfText = `[PDF File: ${filename}]\n\nPlease analyze this PDF and extract the information requested above.`;
-
-  const postData = JSON.stringify({
-    model: 'MiniMax-M2.5',
-    messages: [
-      { role: 'user', content: prompt },
-      { role: 'user', content: pdfText }
-    ],
-    max_tokens: 3000
-  });
-
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: '127.0.0.1',
-      port: 18789,
-      path: '/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          resolve(parsed);
-        } catch (e) {
-          reject(e);
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
 }
 
-// API endpoint
-app.post('/api/analyze-pdf', async (req, res) => {
-  try {
-    const { file, filename } = req.body;
-    
-    if (!file) {
-      return res.status(400).json({ error: 'No file provided' });
-    }
+Resume/CV text:
+${extractedText.substring(0, 8000)}`;
 
-    console.log('Analyzing PDF with OpenClaw...');
-    
-    const result = await analyzeWithOpenClaw(file, filename || 'document.pdf');
-    
-    const content = result?.choices?.[0]?.message?.content || '';
-    
-    // Try to parse JSON from response
-    let parsed = null;
-    try {
-      const match = content.match(/\{[\s\S]*\}/);
-      if (match) {
-        parsed = JSON.parse(match[0]);
-      }
-    } catch (e) {
-      console.log('Could not parse JSON from response');
-    }
+    const postData = JSON.stringify({
+      model: 'MiniMax-M2.5',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2000
+    });
 
-    res.json({
-      success: true,
-      raw: content,
-      parsed: parsed,
-      analyzedAt: new Date().toISOString()
+    console.log('Sending to OpenClaw...');
+
+    return new Promise((resolve, reject) => {
+      const options = {
+        hostname: '127.0.0.1',
+        port: 18789,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      };
+
+      const request = require('http').request(options, (response) => {
+        let data = '';
+        response.on('data', chunk => data += chunk);
+        response.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed?.choices?.[0]?.message?.content || '';
+            
+            let extracted = null;
+            try {
+              const match = content.match(/\{[\s\S]*\}/);
+              if (match) extracted = JSON.parse(match[0]);
+            } catch {}
+            
+            resolve(res.json({
+              success: true,
+              extracted: extracted,
+              rawText: extractedText.substring(0, 2000),
+              method: 'tesseract-ocr',
+              analyzedAt: new Date().toISOString()
+            }));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+
+      request.on('error', reject);
+      request.write(postData);
+      request.end();
     });
 
   } catch (error) {
@@ -122,13 +147,44 @@ app.post('/api/analyze-pdf', async (req, res) => {
   }
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', analyzer: 'ready' });
+// Extract text only
+app.post('/api/extract-text', async (req, res) => {
+  try {
+    const { file, filename } = req.body;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+    
+    const fileBuffer = Buffer.from(file, 'base64');
+    const mimeType = filename?.endsWith('.pdf') ? 'application/pdf' : 
+                     filename?.endsWith('.png') ? 'image/png' :
+                     filename?.endsWith('.jpg') || filename?.endsWith('.jpeg') ? 'image/jpeg' :
+                     'text/plain';
+    
+    console.log('Extracting text with OCR...');
+    
+    const text = await extractWithOCR(fileBuffer, mimeType);
+    
+    res.json({
+      success: true,
+      text: text,
+      method: 'tesseract-ocr'
+    });
+    
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-const PORT = process.env.PORT || 3001;
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', parser: 'tesseract-ready' });
+});
+
+const PORT = process.env.PORT || 3010;
 app.listen(PORT, () => {
-  console.log(`🤖 PDF Analyzer running on http://localhost:${PORT}`);
+  console.log(`📄 PDF Analyzer with Tesseract.js OCR running on http://localhost:${PORT}`);
   console.log(`📡 POST /api/analyze-pdf { "file": "base64...", "filename": "resume.pdf" }`);
 });

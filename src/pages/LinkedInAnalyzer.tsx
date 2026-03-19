@@ -1,9 +1,11 @@
 ﻿import React, { useState } from 'react';
-import { Link2, Send, Loader2, Check, AlertCircle, Globe, FileText, Copy, Sparkles } from 'lucide-react';
+import { Link2, Send, Loader2, Check, AlertCircle, Globe, FileText, Copy, Sparkles, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
-import { analyzeProfileContent } from '../services/openclaw';
+import { useNavigate } from 'react-router-dom';
+import { analyzeLinkedInUrl, analyzeProfileContent } from '../services/openclaw';
 
 export default function LinkedInAnalyzer() {
+  const navigate = useNavigate();
   const [inputMode, setInputMode] = useState<'url' | 'text'>('url');
   const [linkedInUrl, setLinkedInUrl] = useState('');
   const [profileText, setProfileText] = useState('');
@@ -12,7 +14,7 @@ export default function LinkedInAnalyzer() {
   const [error, setError] = useState('');
   const [result, setResult] = useState<any>(null);
 
-  const isValidLinkedInUrl = (url: string) => url.toLowerCase().includes('linkedin.com');
+  const isValidLinkedInUrl = (url: string) => url.toLowerCase().includes('linkedin.com/in/');
 
   const handleAnalyze = async () => {
     const content = inputMode === 'url' ? linkedInUrl : profileText;
@@ -24,7 +26,7 @@ export default function LinkedInAnalyzer() {
     }
 
     if (inputMode === 'url' && !isValidLinkedInUrl(content)) {
-      setError('Please enter a valid LinkedIn URL');
+      setError('Please enter a valid LinkedIn profile URL (linkedin.com/in/...)');
       setStatus('error');
       return;
     }
@@ -35,15 +37,15 @@ export default function LinkedInAnalyzer() {
     setResult(null);
 
     try {
-      let profileContent = content;
+      let analysisResult: any;
       
-      // If URL mode, add context that LinkedIn is blocked
       if (inputMode === 'url') {
-        profileContent = `LinkedIn Profile URL: ${content}\n\nNote: LinkedIn blocks automated access. Please paste the profile content manually for analysis, or provide any information you have about this person.`;
+        console.log('[LinkedInAnalyzer] Scraping LinkedIn URL:', content);
+        analysisResult = await analyzeLinkedInUrl(content);
+      } else {
+        console.log('[LinkedInAnalyzer] Analyzing pasted content...');
+        analysisResult = await analyzeProfileContent(content);
       }
-
-      console.log('[LinkedInAnalyzer] Calling analyzeProfileContent...');
-      const analysisResult = await analyzeProfileContent(profileContent);
       
       console.log('[LinkedInAnalyzer] Analysis result:', analysisResult);
       setResult(analysisResult);
@@ -51,7 +53,7 @@ export default function LinkedInAnalyzer() {
       
     } catch (err: any) {
       console.error('[LinkedInAnalyzer] Error:', err);
-      setError(err.message || 'Analysis failed. Please try again.');
+      setError(err.message || 'Analysis failed. Please try again or use paste text mode.');
       setStatus('error');
     } finally {
       setIsAnalyzing(false);
@@ -60,6 +62,14 @@ export default function LinkedInAnalyzer() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  const handleProceedToValidation = () => {
+    // Store result in sessionStorage for validation page
+    if (result) {
+      sessionStorage.setItem('linkedin_analysis', JSON.stringify(result));
+    }
+    navigate('/validation');
   };
 
   return (
@@ -105,7 +115,7 @@ export default function LinkedInAnalyzer() {
               className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 px-4 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
             />
             <p className="text-xs text-zinc-500">
-              💡 LinkedIn blocks automated access. For best results, use "Paste Text" mode below.
+              We'll automatically scrape the profile and extract skills using AI
             </p>
           </div>
         ) : (
@@ -119,7 +129,7 @@ export default function LinkedInAnalyzer() {
               className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 px-4 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 resize-none"
             />
             <p className="text-xs text-zinc-500">
-              💡 Copy and paste the profile content manually for best results
+              Copy and paste profile content manually for best results
             </p>
           </div>
         )}
@@ -145,13 +155,22 @@ export default function LinkedInAnalyzer() {
             <div className="flex items-center gap-2 text-emerald-500">
               <Check size={20} />
               <span className="font-bold">Analysis Complete</span>
+              {result.web3_relevance && (
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  result.web3_relevance === 'high' ? 'bg-emerald-500/20 text-emerald-400' :
+                  result.web3_relevance === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                  'bg-zinc-500/20 text-zinc-400'
+                }`}>
+                  Web3: {result.web3_relevance}
+                </span>
+              )}
             </div>
 
             {result.summary && (
               <div className="bg-zinc-900/50 p-4 rounded-xl border-l-4 border-emerald-500">
                 <div className="flex justify-between items-start">
                   <p className="text-white">{result.summary}</p>
-                  <button onClick={() => copyToClipboard(result.summary)} className="text-zinc-500 hover:text-white">
+                  <button onClick={() => copyToClipboard(result.summary)} className="text-zinc-500 hover:text-white ml-2">
                     <Copy className="w-4 h-4" />
                   </button>
                 </div>
@@ -165,14 +184,21 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            {result.skills?.length > 0 && (
+            {result.name && (
+              <div className="bg-zinc-900/50 p-4 rounded-xl">
+                <h4 className="text-zinc-400 text-sm mb-1">Name</h4>
+                <p className="text-white font-medium">{result.name}</p>
+              </div>
+            )}
+
+            {(result.skills?.length > 0 || result.extractedSkills?.length > 0) && (
               <div>
                 <h4 className="text-zinc-400 text-sm mb-2 flex items-center gap-2">
-                  Skills ({result.skills.length})
-                  <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">Verified</span>
+                  Skills {result.skills?.length ? `(${result.skills.length})` : `(${result.extractedSkills?.length})`}
+                  <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">AI Extracted</span>
                 </h4>
                 <div className="flex flex-wrap gap-2">
-                  {result.skills.map((s: string, i: number) => (
+                  {(result.skills || result.extractedSkills || []).map((s: string, i: number) => (
                     <span key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded-lg text-sm">
                       {s}
                     </span>
@@ -188,10 +214,10 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            {result.education?.length > 0 && (
+            {(result.education?.length > 0 || result.educationDetails?.length > 0) && (
               <div>
                 <h4 className="text-zinc-400 text-sm mb-2">Education</h4>
-                {result.education.map((e: string, i: number) => (
+                {(result.education || result.educationDetails || []).map((e: string, i: number) => (
                   <p key={i} className="text-white text-sm flex items-center gap-2">
                     <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
                     {e}
@@ -200,11 +226,11 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            {result.certifications?.length > 0 && (
+            {(result.certifications?.length > 0 || result.certificationsDetails?.length > 0) && (
               <div>
                 <h4 className="text-zinc-400 text-sm mb-2">Certifications</h4>
                 <div className="flex flex-wrap gap-2">
-                  {result.certifications.map((c: string, i: number) => (
+                  {(result.certifications || result.certificationsDetails || []).map((c: string, i: number) => (
                     <span key={i} className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 px-3 py-1 rounded-lg text-sm">
                       🏆 {c}
                     </span>
@@ -213,8 +239,12 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            <button className="w-full bg-emerald-500 text-black font-bold py-3 rounded-xl hover:bg-emerald-600 transition-colors">
+            <button 
+              onClick={handleProceedToValidation}
+              className="w-full bg-emerald-500 text-black font-bold py-3 rounded-xl hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2"
+            >
               Proceed to Validation
+              <ArrowRight className="w-4 h-4" />
             </button>
           </motion.div>
         )}

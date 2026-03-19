@@ -74,10 +74,10 @@ async function analyzeCV(file) {
     }
   }
   
-  // Send to OpenClaw for analysis - include contact info extraction
+  // Send to OpenClaw for analysis
   const prompt = extractedText 
-    ? `You are ETHV, a Web3 talent validation agent. Extract JSON from this CV with ALL fields: {name: "", email: "", phone: "", location: "", linkedin: "", github: "", portfolio: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"} CV Text: ${extractedText.substring(0, 4000)}`
-    : `You are ETHV, a Web3 talent validation agent. Analyze this file and extract JSON with ALL fields: {name: "", email: "", phone: "", location: "", linkedin: "", github: "", portfolio: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"} File: ${file.name}, Size: ${file.size} bytes`;
+    ? `You are ETHV, a Web3 talent validation agent. Extract JSON from this CV: {skills: [], experience_years: 0, education: [], certifications: [], summary: "", web3_relevance: "low"} CV Text: ${extractedText.substring(0, 4000)}`
+    : `You are ETHV, a Web3 talent validation agent. Analyze this file and extract JSON: {skills: [], experience_years: 0, education: [], certifications: [], summary: "", web3_relevance: "low"} File: ${file.name}, Size: ${file.size} bytes`;
 
   log('INFO', 'Sending to OpenClaw...');
   const result = await sendToAgent(prompt);
@@ -93,40 +93,9 @@ async function analyzeCV(file) {
   return { skills: [], experience_years: 0, summary: content || 'Analysis complete' };
 }
 
-// Analyze LinkedIn URL - scrapes and analyzes
-async function analyzeLinkedInUrl(url) {
-  log('INFO', 'analyzeLinkedInUrl called', {url});
-  
-  // Note: Direct scraping is blocked by LinkedIn. 
-  // User should paste profile content for best results.
-  // This function prompts user to use text mode.
-  
-  const prompt = `You are ETHV, a Web3 talent validation agent. A user wants to analyze their LinkedIn profile. URL: ${url}. 
-
-Please respond with JSON extracting as much info as possible from the URL format, then ask them to paste their profile content for full analysis.
-
-Response format:
-{linkedin_url: "${url}", message: "Please paste your profile content for full analysis", skills: [], summary: ""}`;
-
-  const result = await sendToAgent(prompt);
-  const content = result.choices ? result.choices[0].message.content : '';
-  
-  try {
-    const match = content.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
-  } catch (e) {}
-  
-  return { linkedin_url: url, message: 'Please paste profile content for analysis', skills: [] };
-}
-
 // Analyze profile content (text/LinkedIn)
 async function analyzeProfileContent(content) {
-  log('INFO', 'analyzeProfileContent called', {length: content.length});
-  
-  const prompt = `You are ETHV, a Web3 talent validation agent. Extract JSON from this LinkedIn/profile content with ALL fields: {name: "", headline: "", email: "", phone: "", location: "", linkedin: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"}
-
-Profile Content:
-${content.slice(0, 6000)}`;
+  const prompt = 'You are ETHV, a Web3 talent validation agent. Extract JSON: {skills: [], experience_years: 0, education: [], certifications: [], summary: "", web3_relevance: "low"} Content: ' + content.slice(0, 5000);
 
   const result = await sendToAgent(prompt);
   const text = result.choices ? result.choices[0].message.content : '';
@@ -134,9 +103,7 @@ ${content.slice(0, 6000)}`;
   try {
     const match = text.match(/\{[\s\S]*\}/);
     if (match) return JSON.parse(match[0]);
-  } catch (e) {
-    log('ERROR', 'JSON parse failed', {error: e.message});
-  }
+  } catch (e) {}
   
   return { summary: text, skills: [], web3_relevance: 'low' };
 }
@@ -157,4 +124,4 @@ function getLogs() {
   return [];
 }
 
-export { sendToAgent, analyzeCV, analyzeLinkedInUrl, analyzeProfileContent, checkConnection, log, clearLogs, getLogs };
+export { sendToAgent, analyzeCV, analyzeProfileContent, checkConnection, log, clearLogs, getLogs };

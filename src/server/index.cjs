@@ -1,11 +1,11 @@
-// ETHV Backend Server
+﻿// ETHV Backend Server
 const express = require('express');
 const https = require('https');
 const http = require('http');
 const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3003;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -13,6 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const OPENCLAW_HOST = '127.0.0.1';
 const OPENCLAW_PORT = 18789;
+const OPENCLAW_TOKEN = 'bd1177ff2d28a2c4ceew1e08fee975fc9';
 
 app.use((req, res, next) => {
   console.log('[' + new Date().toISOString() + '] ' + req.method + ' ' + req.path);
@@ -30,16 +31,21 @@ app.get('/api/health', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const body = JSON.stringify(req.body);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    };
+    
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+    
     const options = {
       hostname: OPENCLAW_HOST,
       port: OPENCLAW_PORT,
       path: '/v1/chat/completions',
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-        'Authorization': req.headers.authorization || ''
-      }
+      headers
     };
 
     const proxyReq = http.request(options, (proxyRes) => {
@@ -69,7 +75,7 @@ function httpGet(url) {
     client.get(url, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve(data);
+      res.on('end', () => resolve(data));
     }).on('error', reject);
   });
 }
@@ -137,6 +143,11 @@ app.post('/api/analyze-profile', async (req, res) => {
     
     const prompt = 'Eres ETHV. Analiza este perfil y devuelve JSON con: skills (array), experience_years (number), education (array), certifications (array), summary (string), headline (string), location (string), web3_relevance (high/medium/low). Perfil: ' + content.slice(0, 10000) + '. Responde SOLO JSON.';
     
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + OPENCLAW_TOKEN
+    };
+    
     const requestBody = JSON.stringify({
       model: 'MiniMax-M2.5',
       messages: [{ role: 'user', content: prompt }],
@@ -149,11 +160,11 @@ app.post('/api/analyze-profile', async (req, res) => {
       port: OPENCLAW_PORT,
       path: '/v1/chat/completions',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(requestBody) }
+      headers
     };
 
     return new Promise((resolve) => {
-      const req = http.request(options, (proxyRes) => {
+      const proxyReq = http.request(options, (proxyRes) => {
         let data = '';
         proxyRes.on('data', chunk => data += chunk);
         proxyRes.on('end', () => {
@@ -165,17 +176,17 @@ app.post('/api/analyze-profile', async (req, res) => {
               const result = JSON.parse(jsonMatch[0]);
               res.json({ success: true, ...result });
             } else {
-              res.json({ success: true, summary: msgContent.slice(0, 200) });
+              res.json({ success: true, summary: msgContent.slice(0, 500) });
             }
           } catch (e) {
-            res.json({ success: true, error: 'Parse error' });
+            res.json({ success: true, error: 'Parse error', raw: data });
           }
           resolve();
         });
       });
-      req.on('error', (err) => { res.status(500).json({ error: 'AI failed', details: err.message }); resolve(); });
-      req.write(requestBody);
-      req.end();
+      proxyReq.on('error', (err) => { res.status(500).json({ error: 'AI failed', details: err.message }); resolve(); });
+      proxyReq.write(requestBody);
+      proxyReq.end();
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
