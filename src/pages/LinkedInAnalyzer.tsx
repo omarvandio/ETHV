@@ -1,8 +1,9 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { Link2, Send, Loader2, Check, AlertCircle, Globe, FileText, Copy, Sparkles, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
-import { analyzeLinkedInUrl, analyzeProfileContent } from '../services/openclaw';
+
+const API_BASE = 'http://localhost:3003';
 
 export default function LinkedInAnalyzer() {
   const navigate = useNavigate();
@@ -13,6 +14,7 @@ export default function LinkedInAnalyzer() {
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [error, setError] = useState('');
   const [result, setResult] = useState<any>(null);
+  const [scrapeMethod, setScrapeMethod] = useState('');
 
   const isValidLinkedInUrl = (url: string) => url.toLowerCase().includes('linkedin.com/in/');
 
@@ -35,16 +37,55 @@ export default function LinkedInAnalyzer() {
     setStatus('idle');
     setError('');
     setResult(null);
+    setScrapeMethod('');
 
     try {
       let analysisResult: any;
       
       if (inputMode === 'url') {
         console.log('[LinkedInAnalyzer] Scraping LinkedIn URL:', content);
-        analysisResult = await analyzeLinkedInUrl(content);
+        
+        // Step 1: Try to scrape the LinkedIn profile
+        const scrapeRes = await fetch(`${API_BASE}/api/linkedin-scrape`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: content })
+        });
+        
+        const scrapeData = await scrapeRes.json();
+        console.log('[LinkedInAnalyzer] Scrape result:', scrapeData);
+        
+        if (scrapeData.success && scrapeData.text) {
+          setScrapeMethod(scrapeData.method || 'jina-ai');
+          
+          // Step 2: Analyze the scraped content with AI
+          const analyzeRes = await fetch(`${API_BASE}/api/analyze-profile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: scrapeData.text })
+          });
+          
+          const analyzeData = await analyzeRes.json();
+          analysisResult = analyzeData;
+        } else {
+          // If scraping fails, use AI fallback with URL
+          setError(scrapeData.error || 'LinkedIn blocks automated scraping. Try "Paste Text" mode.');
+          setStatus('error');
+          setIsAnalyzing(false);
+          return;
+        }
       } else {
         console.log('[LinkedInAnalyzer] Analyzing pasted content...');
-        analysisResult = await analyzeProfileContent(content);
+        
+        // Direct analysis of pasted text
+        const analyzeRes = await fetch(`${API_BASE}/api/analyze-profile`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: profileText })
+        });
+        
+        analysisResult = await analyzeRes.json();
+        setScrapeMethod('text-input');
       }
       
       console.log('[LinkedInAnalyzer] Analysis result:', analysisResult);
@@ -155,6 +196,11 @@ export default function LinkedInAnalyzer() {
             <div className="flex items-center gap-2 text-emerald-500">
               <Check size={20} />
               <span className="font-bold">Analysis Complete</span>
+              {scrapeMethod && (
+                <span className="ml-2 px-2 py-0.5 rounded-full text-xs bg-zinc-800 text-zinc-400">
+                  via {scrapeMethod}
+                </span>
+              )}
               {result.web3_relevance && (
                 <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
                   result.web3_relevance === 'high' ? 'bg-emerald-500/20 text-emerald-400' :
@@ -191,14 +237,14 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            {(result.skills?.length > 0 || result.extractedSkills?.length > 0) && (
+            {(result.skills?.length > 0) && (
               <div>
                 <h4 className="text-zinc-400 text-sm mb-2 flex items-center gap-2">
-                  Skills {result.skills?.length ? `(${result.skills.length})` : `(${result.extractedSkills?.length})`}
+                  Skills ({result.skills.length})
                   <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">AI Extracted</span>
                 </h4>
                 <div className="flex flex-wrap gap-2">
-                  {(result.skills || result.extractedSkills || []).map((s: string, i: number) => (
+                  {result.skills.map((s: string, i: number) => (
                     <span key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded-lg text-sm">
                       {s}
                     </span>
@@ -214,10 +260,10 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            {(result.education?.length > 0 || result.educationDetails?.length > 0) && (
+            {(result.education?.length > 0) && (
               <div>
                 <h4 className="text-zinc-400 text-sm mb-2">Education</h4>
-                {(result.education || result.educationDetails || []).map((e: string, i: number) => (
+                {result.education.map((e: string, i: number) => (
                   <p key={i} className="text-white text-sm flex items-center gap-2">
                     <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
                     {e}
@@ -226,11 +272,11 @@ export default function LinkedInAnalyzer() {
               </div>
             )}
 
-            {(result.certifications?.length > 0 || result.certificationsDetails?.length > 0) && (
+            {(result.certifications?.length > 0) && (
               <div>
                 <h4 className="text-zinc-400 text-sm mb-2">Certifications</h4>
                 <div className="flex flex-wrap gap-2">
-                  {(result.certifications || result.certificationsDetails || []).map((c: string, i: number) => (
+                  {result.certifications.map((c: string, i: number) => (
                     <span key={i} className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 px-3 py-1 rounded-lg text-sm">
                       🏆 {c}
                     </span>

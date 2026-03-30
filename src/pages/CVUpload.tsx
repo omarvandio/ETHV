@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileText, Check, AlertCircle, Loader2, Wifi, WifiOff, Terminal, Mail, Phone, MapPin, Linkedin, Github, Globe } from 'lucide-react';
+import { Upload, FileText, Check, AlertCircle, Loader2, Wifi, WifiOff, Terminal, Mail, Phone, MapPin, Linkedin, Github, Globe, FileDown, Briefcase, Clock, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { analyzeCV, checkConnection, getLogs, clearLogs } from '../services/openclaw';
+import { analyzeCV, checkConnection, getLogs, clearLogs, generateCoverLetter, generateInterviewPrep, analyzeJobOffer } from '../services/openclaw';
 
 interface ContactInfo {
   name: string;
@@ -33,6 +33,21 @@ export default function CVUpload() {
   const [education, setEducation] = useState<string[]>([]);
   const [summary, setSummary] = useState<string>('');
   const [web3Relevance, setWeb3Relevance] = useState<string>('low');
+  const [overallScore, setOverallScore] = useState<number>(0);
+  const [atsScore, setAtsScore] = useState<number>(0);
+  const [dimensions, setDimensions] = useState<any>({});
+  const [suggestedRoles, setSuggestedRoles] = useState<any[]>([]);
+  const [estimatedLevel, setEstimatedLevel] = useState<string>('');
+  const [strengths, setStrengths] = useState<string[]>([]);
+  const [improvements, setImprovements] = useState<string[]>([]);
+  const [coverLetter, setCoverLetter] = useState<string>('');
+  const [interviewPrep, setInterviewPrep] = useState<any>(null);
+  const [showCoverLetter, setShowCoverLetter] = useState(false);
+  const [showInterviewPrep, setShowInterviewPrep] = useState(false);
+  const [showJobAnalysis, setShowJobAnalysis] = useState(false);
+  const [jobOfferInput, setJobOfferInput] = useState({ title: '', company: '', required_skills: '', experience_required: 0 });
+  const [jobAnalysisResult, setJobAnalysisResult] = useState<any>(null);
+  const [cvStats, setCvStats] = useState<any>(null);
   
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -92,7 +107,22 @@ export default function CVUpload() {
       if (result.summary) setSummary(result.summary);
       if (result.web3_relevance) setWeb3Relevance(result.web3_relevance);
       
+      // Use scores from backend analysis (proper implementation)
+      setOverallScore(result.score || 0);
+      setAtsScore(result.ats_score || 0);
+      setEstimatedLevel(result.level || '');
+      setDimensions(result.dimensions || {});
+      setSuggestedRoles(result.suggested_roles || []);
+      setStrengths(result.strengths || []);
+      setImprovements(result.improvements || []);
+      setCvStats(result.stats || null);
+      
       setUploadStatus('success');
+
+      try {
+        setCoverLetter(generateCoverLetter(result, result.current_position || 'Developer', 'Company'));
+        setInterviewPrep(generateInterviewPrep(result));
+      } catch(e) {}
     } catch (error: any) {
       console.error('Upload failed:', error);
       setErrorMessage(error.message || 'Failed to analyze CV');
@@ -115,10 +145,36 @@ export default function CVUpload() {
     return JSON.stringify(lang);
   };
 
+  const handleJobAnalysis = async () => {
+    try {
+      const resultData = analyzeJobOffer(
+        { skills: extractedSkills, experience_years: experienceYears, certifications },
+        jobOfferInput
+      );
+      setJobAnalysisResult(resultData);
+    } catch (e) {
+      console.error('Job analysis error:', e);
+    }
+  };
+
   const getEducationName = (edu: any): string => {
     if (typeof edu === 'string') return edu;
     if (edu?.degree) return edu.degree + (edu?.school ? ` at ${edu.school}` : '');
     return JSON.stringify(edu);
+  };
+
+  // Helper to get score color class
+  const getScoreColorClass = (score: number) => {
+    if (score >= 70) return 'text-emerald-400';
+    if (score >= 50) return 'text-yellow-400';
+    return 'text-red-400';
+  };
+
+  // Helper to get progress bar color class
+  const getProgressBarColorClass = (score: number) => {
+    if (score >= 70) return 'bg-emerald-500';
+    if (score >= 50) return 'bg-yellow-500';
+    return 'bg-red-500';
   };
 
   return (
@@ -228,6 +284,65 @@ export default function CVUpload() {
                 <Check size={20} />
                 Analysis Complete
               </div>
+              
+              {overallScore > 0 && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-zinc-400">Overall Score</span>
+                    <span className={`text-2xl font-bold ${getScoreColorClass(overallScore)}`}>{overallScore}/100</span>
+                  </div>
+                  <div className="w-full bg-zinc-800 h-2 rounded-full">
+                    <div className={`h-2 rounded-full ${getProgressBarColorClass(overallScore)}`} style={{width: overallScore+'%'}}></div>
+                  </div>
+                  {estimatedLevel && <p className="text-zinc-400 text-sm mt-2">Level: {estimatedLevel}</p>}
+                </div>
+              )}
+              
+              {suggestedRoles.length > 0 && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <h4 className="text-zinc-400 text-sm mb-3">Suggested Roles</h4>
+                  <div className="space-y-2">
+                    {suggestedRoles.map((role, i) => (
+                      <div key={i} className="flex justify-between items-center">
+                        <span className="text-white">{role.title}</span>
+                        <span className={`text-sm font-bold ${(role.match_percentage || role.match) >= 80 ? 'text-emerald-400' : 'text-yellow-400'}`}>{(role.match_percentage || role.match)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {dimensions.ats > 0 && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <h4 className="text-zinc-400 text-sm mb-3">Dimensions Analysis</h4>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="flex justify-between items-center"><span className="text-zinc-500">ATS</span><span className="text-white font-medium">{dimensions.ats}%</span></div>
+                    <div className="flex justify-between items-center"><span className="text-zinc-500">Enfoque</span><span className="text-white font-medium">{dimensions.enfoque}%</span></div>
+                    <div className="flex justify-between items-center"><span className="text-zinc-500">Impacto</span><span className="text-white font-medium">{dimensions.impacto}%</span></div>
+                    <div className="flex justify-between items-center"><span className="text-zinc-500">Claridad</span><span className="text-white font-medium">{dimensions.claridad}%</span></div>
+                    <div className="flex justify-between items-center"><span className="text-zinc-500">Contacto</span><span className="text-white font-medium">{dimensions.contacto}%</span></div>
+                    <div className="flex justify-between items-center"><span className="text-zinc-500">Legibilidad</span><span className="text-white font-medium">{dimensions.legibilidad}%</span></div>
+                  </div>
+                </div>
+              )}
+              
+              {strengths.length > 0 && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <h4 className="text-emerald-400 text-sm mb-2">✓ Strengths</h4>
+                  <ul className="text-zinc-300 text-sm space-y-1">
+                    {strengths.map((s,i) => <li key={i}>• {s}</li>)}
+                  </ul>
+                </div>
+              )}
+              
+              {improvements.length > 0 && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <h4 className="text-yellow-400 text-sm mb-2">→ Improvements</h4>
+                  <ul className="text-zinc-300 text-sm space-y-1">
+                    {improvements.map((s,i) => <li key={i}>• {s}</li>)}
+                  </ul>
+                </div>
+              )}
               
               {/* Contact Information */}
               {(contactInfo.name || contactInfo.email || contactInfo.phone) && (
@@ -355,6 +470,171 @@ export default function CVUpload() {
                 }`}>
                   {web3Relevance}
                 </p>
+              </div>
+              
+                            {/* CV Stats */}
+              {cvStats && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <h4 className="text-zinc-400 text-sm mb-3">CV Statistics</h4>
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div>
+                      <p className="text-2xl font-bold text-white">{cvStats.word_count || 0}</p>
+                      <p className="text-zinc-500 text-xs">Words</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-white">{cvStats.reading_time_minutes || 1}</p>
+                      <p className="text-zinc-500 text-xs">Min read</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-emerald-400">{cvStats.spelling_score || 100}%</p>
+                      <p className="text-zinc-500 text-xs">Spelling</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Cover Letter Section */}
+              {coverLetter && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <button 
+                    onClick={() => setShowCoverLetter(!showCoverLetter)}
+                    className="w-full flex items-center justify-between text-left"
+                  >
+                    <h4 className="text-zinc-400 text-sm">Cover Letter Generator</h4>
+                    {showCoverLetter ? <ChevronUp size={16} className="text-zinc-400" /> : <ChevronDown size={16} className="text-zinc-400" />}
+                  </button>
+                  {showCoverLetter && (
+                    <div className="mt-4">
+                      <pre className="text-zinc-300 text-sm whitespace-pre-wrap font-sans">{coverLetter}</pre>
+                      <button className="mt-4 flex items-center gap-2 text-emerald-400 text-sm hover:text-emerald-300">
+                        <FileDown size={16} /> Download as TXT
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Interview Preparation Section */}
+              {interviewPrep && (
+                <div className="bg-zinc-900/50 p-4 rounded-xl">
+                  <button 
+                    onClick={() => setShowInterviewPrep(!showInterviewPrep)}
+                    className="w-full flex items-center justify-between text-left"
+                  >
+                    <h4 className="text-zinc-400 text-sm">Interview Preparation</h4>
+                    {showInterviewPrep ? <ChevronUp size={16} className="text-zinc-400" /> : <ChevronDown size={16} className="text-zinc-400" />}
+                  </button>
+                  {showInterviewPrep && (
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <h5 className="text-white text-sm font-bold mb-2">Common Questions</h5>
+                        <ul className="text-zinc-300 text-sm space-y-1">
+                          {interviewPrep.common_questions?.map((q: string, i: number) => (
+                            <li key={i} className="flex items-start gap-2">
+                              <span className="text-emerald-400">•</span>
+                              {q}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <h5 className="text-white text-sm font-bold mb-2">STAR Method Examples</h5>
+                        <div className="space-y-2">
+                          {interviewPrep.star_method_examples?.slice(0, 2).map((ex: string, i: number) => (
+                            <p key={i} className="text-zinc-400 text-xs italic border-l-2 border-emerald-500 pl-2">{ex}</p>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <h5 className="text-white text-sm font-bold mb-2">Tips</h5>
+                        <ul className="text-zinc-300 text-sm space-y-1">
+                          {interviewPrep.tips?.slice(0, 4).map((tip: string, i: number) => (
+                            <li key={i} className="flex items-start gap-2">
+                              <span className="text-yellow-400">→</span>
+                              {tip}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Job Offer Analysis Section */}
+              <div className="bg-zinc-900/50 p-4 rounded-xl">
+                <button 
+                  onClick={() => setShowJobAnalysis(!showJobAnalysis)}
+                  className="w-full flex items-center justify-between text-left"
+                >
+                  <h4 className="text-zinc-400 text-sm">Job Offer Analysis</h4>
+                  {showJobAnalysis ? <ChevronUp size={16} className="text-zinc-400" /> : <ChevronDown size={16} className="text-zinc-400" />}
+                </button>
+                {showJobAnalysis && (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Job Title"
+                        value={jobOfferInput.title}
+                        onChange={(e) => setJobOfferInput({...jobOfferInput, title: e.target.value})}
+                        className="bg-zinc-800 border border-zinc-700 text-white px-3 py-2 rounded-lg text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Company"
+                        value={jobOfferInput.company}
+                        onChange={(e) => setJobOfferInput({...jobOfferInput, company: e.target.value})}
+                        className="bg-zinc-800 border border-zinc-700 text-white px-3 py-2 rounded-lg text-sm"
+                      />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Required Skills (comma separated)"
+                      value={jobOfferInput.required_skills}
+                      onChange={(e) => setJobOfferInput({...jobOfferInput, required_skills: e.target.value})}
+                      className="w-full bg-zinc-800 border border-zinc-700 text-white px-3 py-2 rounded-lg text-sm"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Years of Experience Required"
+                      value={jobOfferInput.experience_required || ''}
+                      onChange={(e) => setJobOfferInput({...jobOfferInput, experience_required: parseInt(e.target.value) || 0})}
+                      className="w-full bg-zinc-800 border border-zinc-700 text-white px-3 py-2 rounded-lg text-sm"
+                    />
+                    <button 
+                      onClick={handleJobAnalysis}
+                      className="w-full bg-emerald-500 hover:bg-emerald-600 text-black font-bold py-2 rounded-lg text-sm flex items-center justify-center gap-2"
+                    >
+                      <Briefcase size={16} /> Analyze Match
+                    </button>
+                    
+                    {jobAnalysisResult && (
+                      <div className="mt-4 p-3 bg-zinc-800 rounded-lg">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-zinc-400 text-sm">Overall Match</span>
+                          <span className={`text-2xl font-bold ${jobAnalysisResult.overall_match >= 70 ? 'text-emerald-400' : 'text-yellow-400'}`}>{jobAnalysisResult.overall_match}%</span>
+                        </div>
+                        {jobAnalysisResult.skill_gaps?.length > 0 && (
+                          <div className="mb-3">
+                            <p className="text-zinc-500 text-xs mb-1">Skill Gaps:</p>
+                            <div className="flex flex-wrap gap-1">
+                              {jobAnalysisResult.skill_gaps.slice(0, 3).map((skill: string, i: number) => (
+                                <span key={i} className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded text-xs">{skill}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {jobAnalysisResult.recommendations && (
+                          <div>
+                            <p className="text-zinc-500 text-xs mb-1">Recommendations:</p>
+                            <p className="text-zinc-300 text-xs">{jobAnalysisResult.recommendations[0]}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               
               <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-xl text-emerald-400 text-sm">
