@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(node -e \"require\\(''''./server.js''''\\)\")",
+      "Bash(node -e \"const s = require\\(''swagger-jsdoc''\\); const u = require\\(''swagger-ui-express''\\); console.log\\(''OK''\\)\")",
+      "Bash(node -e \":*)",
+      "Bash(npm list:*)"
+    ]
+  }
+}

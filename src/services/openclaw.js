@@ -327,7 +327,8 @@ async function analyzeLinkedInUrl(url) {
   let scrapeMethod = 'ai-fallback';
   
   try {
-    const scrapeRes = await fetch('http://localhost:3003/api/linkedin-scrape', {
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
+    const scrapeRes = await fetch(`${apiBase}/linkedin-scrape`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })

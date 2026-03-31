@@ -3,7 +3,7 @@ import { Link2, Send, Loader2, Check, AlertCircle, Globe, FileText, Copy, Sparkl
 import { motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 
-const API_BASE = 'http://localhost:3003';
+const API_BASE = (import.meta as any).env.VITE_API_BASE_URL?.replace('/api', '') || '';
 
 export default function LinkedInAnalyzer() {
   const navigate = useNavigate();

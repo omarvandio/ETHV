@@ -1,5 +1,5 @@
 // ETHV Supabase Service
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://dfvqmjwurlqkbduqdjyr.supabase.co';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY || '';
 
 async function saveCVAnalysis(data) {

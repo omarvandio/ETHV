@@ -3,10 +3,12 @@ const cors = require('cors');
 const http = require('http');
 const https = require('https');
 const { Client, GatewayIntentBits } = require('discord.js');
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT ;
+const PORT = process.env.PORT;
 const OPENCLAW_HOST = process.env.OPENCLAW_HOST ;
 const OPENCLAW_PORT = process.env.OPENCLAW_PORT ;
 const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN ;
@@ -14,6 +16,200 @@ const JINA_URL = process.env.JINA_URL ;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// ============================================
+// SWAGGER
+// ============================================
+
+const swaggerSpec = swaggerJsdoc({
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'ETHV Backend API',
+      version: '1.0.0',
+      description: 'API del agente ETHV — análisis de talento Web3, scraping LinkedIn y certificación de habilidades on-chain.',
+    },
+    servers: [
+      { url: 'https://ethv.onrender.com', description: 'Producción (Render)' },
+      { url: 'http://localhost:3003', description: 'Local' },
+    ],
+    tags: [
+      { name: 'Health', description: 'Estado del servidor' },
+      { name: 'AI', description: 'Proxy hacia OpenClaw (MiniMax-M2.5)' },
+      { name: 'LinkedIn', description: 'Scraping y análisis de perfiles' },
+    ],
+    components: {
+      schemas: {
+        LinkedInScrapeResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            method: { type: 'string', example: 'jina-ai' },
+            url: { type: 'string' },
+            skills: { type: 'array', items: { type: 'string' } },
+            web3_relevance: { type: 'string', enum: ['high', 'medium', 'low'] },
+            experience_years: { type: 'integer' },
+            raw: { type: 'string' },
+            scrapedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        ProfileAnalysisResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            skills: { type: 'array', items: { type: 'string' } },
+            experience_years: { type: 'integer' },
+            education: { type: 'array', items: { type: 'string' } },
+            certifications: { type: 'array', items: { type: 'string' } },
+            summary: { type: 'string' },
+            headline: { type: 'string' },
+            location: { type: 'string' },
+            web3_relevance: { type: 'string', enum: ['high', 'medium', 'low'] },
+          },
+        },
+        Error: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+});
+
+// Rutas documentadas inline
+swaggerSpec.paths = {
+  '/health': {
+    get: {
+      tags: ['Health'],
+      summary: 'Healthcheck',
+      responses: {
+        200: {
+          description: 'Servidor activo',
+          content: { 'application/json': { schema: { type: 'object', properties: { status: { type: 'string', example: 'ok' }, timestamp: { type: 'string', format: 'date-time' } } } } },
+        },
+      },
+    },
+  },
+  '/v1/chat/completions': {
+    post: {
+      tags: ['AI'],
+      summary: 'Proxy a OpenClaw AI',
+      description: 'Pasa el request directamente a OpenClaw (MiniMax-M2.5). Compatible con el formato OpenAI.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                model: { type: 'string', example: 'MiniMax-M2.5' },
+                messages: { type: 'array', items: { type: 'object', properties: { role: { type: 'string', enum: ['user', 'assistant', 'system'] }, content: { type: 'string' } } } },
+                max_tokens: { type: 'integer', example: 2000 },
+                temperature: { type: 'number', example: 0.3 },
+              },
+              required: ['model', 'messages'],
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Respuesta de OpenClaw AI' },
+        500: { description: 'Error de proxy', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      },
+    },
+  },
+  '/api/linkedin-scrape': {
+    post: {
+      tags: ['LinkedIn'],
+      summary: 'Scraping de perfil LinkedIn',
+      description: 'Obtiene el contenido del perfil usando Jina AI y extrae skills y relevancia Web3.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['url'],
+              properties: {
+                url: { type: 'string', example: 'https://linkedin.com/in/usuario' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Perfil scrapeado', content: { 'application/json': { schema: { $ref: '#/components/schemas/LinkedInScrapeResponse' } } } },
+        400: { description: 'URL inválida', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+        500: { description: 'Error del servidor', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      },
+    },
+  },
+  '/api/analyze-profile': {
+    post: {
+      tags: ['LinkedIn'],
+      summary: 'Análisis de perfil con IA',
+      description: 'Analiza texto crudo de un perfil usando OpenClaw AI y devuelve estructura JSON con skills, experiencia y relevancia Web3.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['content'],
+              properties: {
+                content: { type: 'string', description: 'Texto del perfil de LinkedIn', example: 'Full Stack Developer con 5 años de experiencia en React y Web3...' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Perfil analizado', content: { 'application/json': { schema: { $ref: '#/components/schemas/ProfileAnalysisResponse' } } } },
+        400: { description: 'Contenido demasiado corto', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+        500: { description: 'Error del servidor', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      },
+    },
+  },
+  '/api/analyze-linkedin': {
+    post: {
+      tags: ['LinkedIn'],
+      summary: 'Análisis legacy (sin IA)',
+      description: 'Versión anterior. Calcula score local a partir de datos estructurados. Mantenido por compatibilidad.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                profileUrl: { type: 'string' },
+                profileData: {
+                  type: 'object',
+                  properties: {
+                    skills: { type: 'array', items: { type: 'string' } },
+                    experience: { type: 'array', items: { type: 'object' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Análisis completado', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, analysis: { type: 'object' } } } } } },
+      },
+    },
+  },
+};
+
+app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customSiteTitle: 'ETHV API Docs',
+  customCss: '.swagger-ui .topbar { background-color: #0f172a; }',
+}));
+app.get('/swagger.json', (req, res) => res.json(swaggerSpec));
 
 const discordClient = new Client({
   intents: [

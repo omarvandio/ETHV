@@ -4,6 +4,8 @@ const express = require('express');
 const https = require('https');
 const http = require('http');
 const cors = require('cors');
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -12,9 +14,161 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-const OPENCLAW_HOST = '127.0.0.1';
-const OPENCLAW_PORT = 18789;
-const OPENCLAW_TOKEN = 'bd1177ff2d28a2c4ceew1e08fee975fc9';
+// ============================================
+// SWAGGER
+// ============================================
+const swaggerSpec = swaggerJsdoc({
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'ETHV API',
+      version: '1.0.0',
+      description: 'API de análisis de talento Web3 — CV, LinkedIn y certificación on-chain.',
+    },
+    servers: [
+      { url: 'https://ethv.onrender.com', description: 'Producción' },
+      { url: 'http://localhost:3003', description: 'Local' },
+    ],
+  },
+  apis: [],
+});
+
+swaggerSpec.paths = {
+  '/health': {
+    get: {
+      tags: ['Health'],
+      summary: 'Healthcheck',
+      responses: { 200: { description: 'OK', content: { 'application/json': { schema: { type: 'object', properties: { status: { type: 'string', example: 'ok' }, timestamp: { type: 'string' } } } } } } },
+    },
+  },
+  '/api/analyze-cv': {
+    post: {
+      tags: ['CV'],
+      summary: 'Analizar CV',
+      description: 'Recibe archivo en base64, extrae texto y analiza con OpenClaw AI. Soporta PDF, DOCX, TXT, MD.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['file', 'filename'],
+              properties: {
+                file: { type: 'string', description: 'Archivo en base64' },
+                filename: { type: 'string', example: 'cv.pdf' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Análisis completo del CV',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  email: { type: 'string' },
+                  phone: { type: 'string' },
+                  location: { type: 'string' },
+                  linkedin: { type: 'string' },
+                  github: { type: 'string' },
+                  skills: { type: 'array', items: { type: 'string' } },
+                  experience_years: { type: 'integer' },
+                  score: { type: 'integer', description: '0-100' },
+                  ats_score: { type: 'integer', description: '0-100' },
+                  level: { type: 'string', enum: ['Entry-Level', 'Junior', 'Mid-Level', 'Senior'] },
+                  web3_relevance: { type: 'string', enum: ['high', 'medium', 'low'] },
+                  dimensions: { type: 'object', properties: { ats: { type: 'integer' }, enfoque: { type: 'integer' }, impacto: { type: 'integer' }, claridad: { type: 'integer' }, contacto: { type: 'integer' }, legibilidad: { type: 'integer' } } },
+                  suggested_roles: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, match_percentage: { type: 'integer' } } } },
+                  strengths: { type: 'array', items: { type: 'string' } },
+                  improvements: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+        400: { description: 'No se proporcionó archivo' },
+        500: { description: 'Error del servidor' },
+      },
+    },
+  },
+  '/api/linkedin-scrape': {
+    post: {
+      tags: ['LinkedIn'],
+      summary: 'Scraping de perfil LinkedIn',
+      description: 'Obtiene el perfil vía Jina AI y extrae skills y relevancia Web3.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', example: 'https://linkedin.com/in/usuario' } } },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Perfil scrapeado con skills y web3_relevance' },
+        400: { description: 'URL inválida' },
+      },
+    },
+  },
+  '/api/analyze-profile': {
+    post: {
+      tags: ['LinkedIn'],
+      summary: 'Análisis de perfil con IA',
+      description: 'Analiza texto de un perfil con OpenClaw AI.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { type: 'object', required: ['content'], properties: { content: { type: 'string', description: 'Texto crudo del perfil' } } },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'JSON con skills, experiencia, educación y web3_relevance' },
+        400: { description: 'Contenido demasiado corto' },
+      },
+    },
+  },
+  '/v1/chat/completions': {
+    post: {
+      tags: ['AI'],
+      summary: 'Proxy a OpenClaw AI',
+      description: 'Pasa el request a OpenClaw (MiniMax-M2.5). Formato compatible con OpenAI.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['model', 'messages'],
+              properties: {
+                model: { type: 'string', example: 'MiniMax-M2.5' },
+                messages: { type: 'array', items: { type: 'object', properties: { role: { type: 'string', enum: ['user', 'assistant', 'system'] }, content: { type: 'string' } } } },
+                max_tokens: { type: 'integer', example: 2000 },
+                temperature: { type: 'number', example: 0.3 },
+              },
+            },
+          },
+        },
+      },
+      responses: { 200: { description: 'Respuesta de OpenClaw AI' } },
+    },
+  },
+};
+
+app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customSiteTitle: 'ETHV API Docs',
+  customCss: '.swagger-ui .topbar { background-color: #0f172a; }',
+}));
+app.get('/swagger.json', (req, res) => res.json(swaggerSpec));
+
+const OPENCLAW_HOST = process.env.OPENCLAW_HOST || '127.0.0.1';
+const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789');
+const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || '';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
