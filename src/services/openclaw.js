@@ -8,16 +8,18 @@ log('INFO', 'Service loaded - Using OCR Backend');
 
 // OpenClaw API function
 async function sendToAgent(message) {
-  const token = 'bd1177ff2d28a2c4ceew1e08fee975fc9';
+  const token = import.meta.env.VITE_OPENCLAW_TOKEN;
+  const model = import.meta.env.VITE_OPENCLAW_MODEL || 'MiniMax-M2.5';
+  const url = import.meta.env.VITE_OPENCLAW_URL || '/v1/chat/completions';
 
-  const response = await fetch('/v1/chat/completions', {
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': 'Bearer ' + token,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'MiniMax-M2.5',
+      model,
       messages: [{ role: 'user', content: message }],
       max_tokens: 2000
     })
@@ -301,7 +303,8 @@ async function analyzeCV(file) {
   const base64 = await fileToBase64(file);
   log('INFO', 'Enviando al backend /api/analyze-cv...');
 
-  const res = await fetch('/api/analyze-cv', {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
+  const res = await fetch(`${apiBase}/analyze-cv`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ file: base64, filename: file.name })
@@ -395,7 +398,8 @@ async function analyzeProfileContent(content) {
 // Verificar conexión al backend
 async function checkConnection() {
   try {
-    const res = await fetch('/api/health');
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
+    const res = await fetch(`${apiBase}/health`);
     return res.ok;
   } catch { return false; }
 }

@@ -169,6 +169,8 @@ app.get('/swagger.json', (req, res) => res.json(swaggerSpec));
 const OPENCLAW_HOST = process.env.OPENCLAW_HOST || '127.0.0.1';
 const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789');
 const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || '';
+const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'MiniMax-M2.5';
+const JINA_URL = process.env.JINA_URL || 'https://r.jina.ai/';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -481,7 +483,7 @@ async function extractTextFromFile(fileBuffer, filename) {
 function callOpenClaw(prompt) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      model: 'MiniMax-M2.5',
+      model: OPENCLAW_MODEL,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 2000,
       temperature: 0.3
@@ -711,7 +713,7 @@ function httpGet(url) {
 
 async function scrapeWithJina(url) {
   try {
-    const text = await httpGet('https://r.jina.ai/' + encodeURIComponent(url));
+    const text = await httpGet(JINA_URL + encodeURIComponent(url));
     return { success: true, text, url };
   } catch (error) {
     return { success: false, error: error.message };
@@ -768,7 +770,7 @@ app.post('/api/analyze-profile', async (req, res) => {
 
     return new Promise((resolve) => {
       const body = JSON.stringify({
-        model: 'MiniMax-M2.5',
+        model: OPENCLAW_MODEL,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 2000,
         temperature: 0.3
