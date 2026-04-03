@@ -33,10 +33,23 @@ setInterval(() => {
 const app = express();
 const PORT = process.env.PORT || 3003;
 
+const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  ...(process.env.EXTRA_ORIGINS ? process.env.EXTRA_ORIGINS.split(',').map(o => o.trim()) : []),
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, mobile apps, same-origin)
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin not allowed — ${origin}`));
+  },
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token'],
+  credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
