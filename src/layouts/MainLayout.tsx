@@ -4,7 +4,7 @@ import { motion } from 'motion/react';
 
 export default function MainLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-black text-zinc-100 flex flex-col font-sans">
+    <div className="min-h-screen flex flex-col font-sans" style={{ backgroundColor: 'var(--color-brand-bg)', color: 'var(--color-brand-text)' }}>
       <Navbar />
       <motion.main
         initial={{ opacity: 0, y: 10 }}
@@ -14,8 +14,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       >
         {children}
       </motion.main>
-      <footer className="bg-zinc-950 border-t border-zinc-900 py-8 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 text-center text-zinc-500 text-sm">
+      <footer className="border-t py-8 mt-auto" style={{ backgroundColor: 'var(--color-brand-surface)', borderColor: 'var(--color-brand-border)' }}>
+        <div className="max-w-7xl mx-auto px-4 text-center text-sm" style={{ color: 'var(--color-brand-faint)' }}>
           <p>&copy; 2026 LikeTalent — Centro de Talento y Habilidades.</p>
         </div>
       </footer>

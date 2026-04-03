@@ -1,28 +1,69 @@
 @import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* ============================================================
+   LikeTalent — Design Tokens
+   Cambiar colores aquí afecta toda la aplicación.
+   ============================================================ */
 @theme {
+  /* Tipografía */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Fondos */
+  --color-brand-bg:        #000000;   /* bg principal (body) */
+  --color-brand-surface:   #09090b;   /* zinc-950 — nav, cards oscuras */
+  --color-brand-card:      #18181b;   /* zinc-900 — cards internas */
+  --color-brand-input:     #27272a;   /* zinc-800 — inputs, separadores */
+
+  /* Bordes */
+  --color-brand-border:    #27272a;   /* zinc-800 */
+  --color-brand-border-subtle: #3f3f46; /* zinc-700 — hover borders */
+
+  /* Texto */
+  --color-brand-text:      #f4f4f5;   /* zinc-100 — texto principal */
+  --color-brand-muted:     #a1a1aa;   /* zinc-400 — texto secundario */
+  --color-brand-faint:     #71717a;   /* zinc-500 — texto muy tenue */
+
+  /* Acento principal — verde esmeralda */
+  --color-brand-accent:        #10b981; /* emerald-500 */
+  --color-brand-accent-hover:  #34d399; /* emerald-400 */
+  --color-brand-accent-dark:   #059669; /* emerald-600 */
+  --color-brand-accent-glow:   #10b98140; /* emerald-500/25 — sombras */
+
+  /* Estados */
+  --color-brand-danger:    #f87171;   /* red-400 */
+  --color-brand-warning:   #fbbf24;   /* amber-400 */
+  --color-brand-info:      #60a5fa;   /* blue-400 */
 }
 
+/* ============================================================
+   Estilos globales
+   ============================================================ */
 :root {
   color-scheme: dark;
 }
 
 body {
-  @apply bg-black text-zinc-100 antialiased selection:bg-emerald-500/30;
+  background-color: var(--color-brand-bg);
+  color: var(--color-brand-text);
+  @apply antialiased;
+  ::selection {
+    background-color: var(--color-brand-accent-glow);
+  }
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
 }
-
 ::-webkit-scrollbar-track {
-  @apply bg-zinc-950;
+  background: var(--color-brand-surface);
 }
-
 ::-webkit-scrollbar-thumb {
-  @apply bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors;
+  background: var(--color-brand-border);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-brand-border-subtle);
 }
