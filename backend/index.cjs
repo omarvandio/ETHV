@@ -385,6 +385,135 @@ function estimateLevel(data) {
 }
 
 // ============================================
+// ENHANCV-INSPIRED QUALITY ANALYSIS
+// ============================================
+
+const CLICHES = [
+  'results-driven', 'results driven', 'passionate about', 'team player',
+  'hard worker', 'hard-working', 'go-getter', 'synergy', 'synergies',
+  'dynamic', 'proactive', 'self-starter', 'think outside the box',
+  'leverage', 'innovative', 'cutting-edge', 'cutting edge', 'best practices',
+  'detail-oriented', 'detail oriented', 'fast learner', 'highly motivated',
+  'proven track record', 'strong work ethic', 'excellent communication',
+  'communication skills', 'interpersonal skills', 'multitasker',
+  'thought leader', 'visionary', 'guru', 'ninja', 'rockstar', 'wizard',
+  'game changer', 'game-changer', 'passionate', 'responsible for',
+  'duties included', 'low-hanging fruit', 'move the needle', 'deep dive',
+  'value add', 'bandwidth', 'circle back'
+];
+
+const PASSIVE_PHRASES = [
+  'was responsible for', 'were responsible for', 'was involved in',
+  'duties included', 'responsibilities included', 'helped with',
+  'assisted with', 'was part of', 'were part of', 'participated in',
+  'was assigned', 'was tasked with', 'was asked to'
+];
+
+const IMPACT_VERBS = [
+  'led', 'launched', 'built', 'created', 'designed', 'implemented',
+  'developed', 'managed', 'directed', 'spearheaded', 'drove', 'achieved',
+  'delivered', 'increased', 'reduced', 'improved', 'generated', 'saved',
+  'optimized', 'automated', 'transformed', 'negotiated', 'established',
+  'founded', 'grew', 'expanded', 'streamlined', 'accelerated', 'exceeded',
+  'surpassed', 'deployed', 'architected', 'migrated', 'scaled'
+];
+
+function analyzeClichesAndBuzzwords(text) {
+  const lower = text.toLowerCase();
+  const found = CLICHES.filter(c => lower.includes(c));
+  return {
+    found,
+    count: found.length,
+    score: Math.max(0, 100 - found.length * 12),
+  };
+}
+
+function analyzeVoice(text) {
+  const lower = text.toLowerCase();
+  const passiveFound = PASSIVE_PHRASES.filter(p => lower.includes(p));
+  const impactFound = IMPACT_VERBS.filter(v => new RegExp(`\\b${v}\\b`, 'i').test(lower));
+  const score = Math.max(0, Math.min(100, 50 + impactFound.length * 4 - passiveFound.length * 10));
+  return {
+    passive_phrases: passiveFound,
+    impact_verbs: impactFound,
+    score,
+  };
+}
+
+function analyzeQuantification(text) {
+  const metricPatterns = [
+    /\d+\s*%/g,
+    /\$\s*[\d,.]+/g,
+    /\d+\s*[kKmMbB]\b/g,
+    /\d+x\b/g,
+    /\d+\+?\s*(users|clients|customers|employees|members|projects|apps|teams)/gi,
+  ];
+  const metrics = [];
+  for (const pattern of metricPatterns) {
+    const found = text.match(pattern);
+    if (found) metrics.push(...found);
+  }
+  const uniqueMetrics = [...new Set(metrics)].slice(0, 10);
+
+  const sentences = text.split(/[\n•·▸\-]/).map(s => s.trim()).filter(s => s.length > 10);
+  const achievementSentences = sentences.filter(s => {
+    const sl = s.toLowerCase();
+    return IMPACT_VERBS.some(v => new RegExp(`\\b${v}\\b`).test(sl));
+  });
+  const quantified = achievementSentences.filter(s => /\d/.test(s));
+  const rate = achievementSentences.length > 0
+    ? Math.round((quantified.length / achievementSentences.length) * 100)
+    : 0;
+
+  return {
+    metrics_found: uniqueMetrics,
+    achievement_sentences: achievementSentences.length,
+    quantified_achievements: quantified.length,
+    quantification_rate: rate,
+    score: Math.min(100, 40 + rate * 0.5 + Math.min(uniqueMetrics.length, 8) * 4),
+  };
+}
+
+function analyzeKeywordDensity(data, text) {
+  const keywordSets = {
+    leadership:  ['led', 'managed', 'directed', 'supervised', 'mentored', 'coordinated'],
+    technical:   ['implemented', 'developed', 'deployed', 'architected', 'automated', 'optimized'],
+    impact:      ['increased', 'reduced', 'improved', 'generated', 'saved', 'delivered'],
+    agile:       ['agile', 'scrum', 'sprint', 'kanban', 'jira', 'roadmap'],
+    cloud:       ['aws', 'azure', 'gcp', 'docker', 'kubernetes', 'terraform'],
+    web3:        ['blockchain', 'solidity', 'ethereum', 'web3', 'defi', 'smart contract'],
+  };
+  const lower = text.toLowerCase();
+  const result = {};
+  let totalFound = 0, totalPossible = 0;
+  for (const [cat, words] of Object.entries(keywordSets)) {
+    const found = words.filter(w => new RegExp(`\\b${w}\\b`).test(lower));
+    result[cat] = { found, count: found.length, total: words.length };
+    totalFound += found.length;
+    totalPossible += words.length;
+  }
+  return {
+    by_category: result,
+    score: Math.min(100, 20 + Math.round((totalFound / totalPossible) * 80)),
+  };
+}
+
+function analyzeQuality(data, text) {
+  const cliches = analyzeClichesAndBuzzwords(text);
+  const voice = analyzeVoice(text);
+  const quantification = analyzeQuantification(text);
+  const keywords = analyzeKeywordDensity(data, text);
+  // Overall quality score: weighted average
+  const overall = Math.round(
+    cliches.score * 0.20 +
+    voice.score   * 0.30 +
+    quantification.score * 0.30 +
+    keywords.score * 0.20
+  );
+  return { cliches, voice, quantification, keywords, overall };
+}
+
+// ============================================
 // SUPABASE — helpers
 // ============================================
 
@@ -665,6 +794,7 @@ Responde SOLO el JSON, sin texto adicional.`;
       strengths: generateStrengths(cvData),
       improvements: generateImprovements(cvData),
       stats: calculateStats(extractedText),
+      quality: analyzeQuality(cvData, extractedText),
       analyzed_at: new Date().toISOString()
     };
 

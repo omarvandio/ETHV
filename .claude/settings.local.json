@@ -18,7 +18,8 @@
       "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3003 -ErrorAction SilentlyContinue | Select-Object State, OwningProcess\")",
       "WebSearch",
       "Skill(update-config)",
-      "Bash(find /d/ETH/ETHV -type f -name *.env* -o -name .env*)"
+      "Bash(find /d/ETH/ETHV -type f -name *.env* -o -name .env*)",
+      "WebFetch(domain:enhancv.com)"
     ]
   },
   "enableAllProjectMcpServers": true

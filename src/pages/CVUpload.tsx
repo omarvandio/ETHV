@@ -89,6 +89,16 @@ const T = {
     commonQuestions: 'Preguntas Frecuentes',
     starMethod: 'Método STAR',
     tips: 'Consejos',
+    qualityTitle: 'Calidad del Contenido',
+    clichesLabel: 'Clichés detectados',
+    clichesNone: 'Sin clichés detectados',
+    voiceLabel: 'Lenguaje activo',
+    impactVerbsLabel: 'Verbos de impacto',
+    passiveLabel: 'Frases pasivas',
+    quantLabel: 'Logros cuantificados',
+    quantRate: 'tasa de cuantificación',
+    keywordsLabel: 'Keywords ATS',
+    qualityScore: 'Puntuación de Calidad',
   },
   en: {
     title: 'Analyze your CV',
@@ -165,6 +175,16 @@ const T = {
     commonQuestions: 'Common Questions',
     starMethod: 'STAR Method',
     tips: 'Tips',
+    qualityTitle: 'Content Quality',
+    clichesLabel: 'Clichés detected',
+    clichesNone: 'No clichés detected',
+    voiceLabel: 'Active language',
+    impactVerbsLabel: 'Impact verbs',
+    passiveLabel: 'Passive phrases',
+    quantLabel: 'Quantified achievements',
+    quantRate: 'quantification rate',
+    keywordsLabel: 'ATS Keywords',
+    qualityScore: 'Quality Score',
   }
 };
 
@@ -205,6 +225,7 @@ export default function CVUpload() {
   const [strengths, setStrengths] = useState<string[]>([]);
   const [improvements, setImprovements] = useState<string[]>([]);
   const [cvStats, setCvStats] = useState<any>(null);
+  const [cvQuality, setCvQuality] = useState<any>(null);
 
   // Extras
   const [coverLetter, setCoverLetter] = useState('');
@@ -267,6 +288,7 @@ export default function CVUpload() {
       setStrengths(result.strengths || []);
       setImprovements(result.improvements || []);
       setCvStats(result.stats || null);
+      setCvQuality(result.quality || null);
       setUploadStatus('success');
       try {
         setCoverLetter(generateCoverLetter(result, result.current_position || 'Developer', 'Company'));
@@ -514,6 +536,97 @@ export default function CVUpload() {
                     <ul className="space-y-1">{improvements.map((s, i) => <li key={i} className="text-zinc-300 text-xs flex gap-1.5"><span className="text-yellow-500 mt-0.5">→</span>{s}</li>)}</ul>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Quality Analysis */}
+            {cvQuality && (
+              <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-zinc-400 text-sm"><Sparkles size={15} /> {t.qualityTitle}</div>
+                  <span className={`text-xl font-black ${scoreColor(cvQuality.overall)}`}>{cvQuality.overall}<span className="text-xs text-zinc-600">/100</span></span>
+                </div>
+
+                {/* Clichés */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-zinc-500 text-xs">{t.clichesLabel}</span>
+                    <span className={`text-xs font-bold ${cvQuality.cliches.count === 0 ? 'text-emerald-400' : cvQuality.cliches.count <= 2 ? 'text-yellow-400' : 'text-red-400'}`}>
+                      {cvQuality.cliches.count === 0 ? '✓' : cvQuality.cliches.count}
+                    </span>
+                  </div>
+                  {cvQuality.cliches.count === 0
+                    ? <p className="text-emerald-500 text-xs">{t.clichesNone}</p>
+                    : <div className="flex flex-wrap gap-1">{cvQuality.cliches.found.map((c: string, i: number) => (
+                        <span key={i} className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs px-2 py-0.5 rounded-md">"{c}"</span>
+                      ))}</div>
+                  }
+                </div>
+
+                {/* Voice */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-zinc-500 text-xs">{t.voiceLabel}</span>
+                    <span className={`text-xs font-bold ${scoreColor(cvQuality.voice.score)}`}>{cvQuality.voice.score}%</span>
+                  </div>
+                  <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden mb-2">
+                    <div className={`h-1 rounded-full ${barColor(cvQuality.voice.score)}`} style={{ width: cvQuality.voice.score + '%' }} />
+                  </div>
+                  {cvQuality.voice.impact_verbs.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {cvQuality.voice.impact_verbs.slice(0, 8).map((v: string, i: number) => (
+                        <span key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-md">{v}</span>
+                      ))}
+                    </div>
+                  )}
+                  {cvQuality.voice.passive_phrases.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {cvQuality.voice.passive_phrases.slice(0, 4).map((p: string, i: number) => (
+                        <span key={i} className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs px-2 py-0.5 rounded-md">"{p}"</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Quantification */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-zinc-500 text-xs">{t.quantLabel}</span>
+                    <span className={`text-xs font-bold ${scoreColor(cvQuality.quantification.score)}`}>
+                      {cvQuality.quantification.quantified_achievements}/{cvQuality.quantification.achievement_sentences} ({cvQuality.quantification.quantification_rate}%)
+                    </span>
+                  </div>
+                  <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden mb-2">
+                    <div className={`h-1 rounded-full ${barColor(cvQuality.quantification.score)}`} style={{ width: cvQuality.quantification.score + '%' }} />
+                  </div>
+                  {cvQuality.quantification.metrics_found.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {cvQuality.quantification.metrics_found.map((m: string, i: number) => (
+                        <span key={i} className="bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs px-2 py-0.5 rounded-md font-mono">{m}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ATS Keywords */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-zinc-500 text-xs">{t.keywordsLabel}</span>
+                    <span className={`text-xs font-bold ${scoreColor(cvQuality.keywords.score)}`}>{cvQuality.keywords.score}%</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {Object.entries(cvQuality.keywords.by_category).map(([cat, data]: any) => (
+                      data.count > 0 && (
+                        <div key={cat} className="bg-zinc-900 rounded-lg px-2.5 py-1.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-zinc-400 text-xs capitalize">{cat}</span>
+                            <span className="text-emerald-400 text-xs font-bold">{data.count}/{data.total}</span>
+                          </div>
+                        </div>
+                      )
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
