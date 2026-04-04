@@ -1,0 +1,9 @@
+node_modules/
+dist/
+cache/
+cache-zk/
+artifacts/
+artifacts-zk/
+typechain-types/
+.env
+*.env.local
