@@ -127,13 +127,34 @@ async function callAI(prompt, options = {}) {
   const { maxTokens = 2048, prefill = null, system = null, jsonMode = false } = options;
   const messages = [{ role: 'user', content: prompt }];
 
-  console.log('[AI] Provider:', PROVIDER, '| Model:', MODEL, '| maxTokens:', maxTokens);
+  const _t0 = Date.now();
+  console.log('[AI] Provider:', PROVIDER, '| Model:', MODEL, '| maxTokens:', maxTokens, '| promptLen:', prompt.length);
 
+  let result;
   if (PROVIDER === 'openai') {
-    return callOpenAI({ messages, maxTokens, system, jsonMode });
+    result = await callOpenAI({ messages, maxTokens, system, jsonMode });
+  } else {
+    result = await callAnthropic({ messages, maxTokens, prefill, system });
   }
-  // Default: anthropic format
-  return callAnthropic({ messages, maxTokens, prefill, system });
+  console.log(`[AI] HTTP round-trip: ${Date.now() - _t0}ms | responseLen: ${result.length}`);
+  return result;
+}
+
+// Like callAI but accepts a full messages array — used for multi-turn quiz generation
+async function callAIMessages(messages, options = {}) {
+  const { maxTokens = 2048, prefill = null, system = null } = options;
+
+  const _t0 = Date.now();
+  console.log('[AI] (chat) turns:', messages.length, '| maxTokens:', maxTokens);
+
+  let result;
+  if (PROVIDER === 'openai') {
+    result = await callOpenAI({ messages, maxTokens, system });
+  } else {
+    result = await callAnthropic({ messages, maxTokens, prefill, system });
+  }
+  console.log(`[AI] HTTP round-trip: ${Date.now() - _t0}ms | responseLen: ${result.length}`);
+  return result;
 }
 
 /**
@@ -160,15 +181,23 @@ function parseJSON(text) {
       else if (c === closeChar) {
         depth--;
         if (depth === 0) {
-          try { return JSON.parse(cleaned.slice(idx, i + 1)); } catch { return null; }
+          try { return JSON.parse(cleaned.slice(idx, i + 1)); } catch (e) {
+          console.error('[parseJSON] JSON.parse failed:', e.message, '| near:', cleaned.slice(Math.max(idx, i - 100), i + 20));
+          return null;
+        }
         }
       }
     }
     return null;
   }
 
-  // Try object first (most common), then array as fallback
-  return extractFrom('{') || extractFrom('[') || null;
+  // Try whichever bracket appears first in the text
+  const objIdx = cleaned.indexOf('{');
+  const arrIdx = cleaned.indexOf('[');
+  const tryArr = arrIdx !== -1 && (objIdx === -1 || arrIdx < objIdx);
+  return tryArr
+    ? (extractFrom('[') || extractFrom('{') || null)
+    : (extractFrom('{') || extractFrom('[') || null);
 }
 
-module.exports = { callAI, parseJSON, PROVIDER, MODEL };
+module.exports = { callAI, callAIMessages, parseJSON, PROVIDER, MODEL };

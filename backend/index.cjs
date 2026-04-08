@@ -8,7 +8,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
-const { callAI, parseJSON } = require('./ai.cjs');
+const { callAI, callAIMessages, parseJSON } = require('./ai.cjs');
 
 // ── OAuth config ─────────────────────────────────────────────────────────────
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
@@ -37,6 +37,7 @@ const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
   'http://localhost:3000',
   'http://localhost:5173',
+  'http://192.168.56.1:3000',
   ...(process.env.EXTRA_ORIGINS ? process.env.EXTRA_ORIGINS.split(',').map(o => o.trim()) : []),
 ];
 
@@ -927,92 +928,142 @@ app.post('/api/analyze-profile', async (req, res) => {
 // GENERATE QUIZ WITH AI
 // ============================================
 
-// In-memory quiz sessions: quizId → { questions (full), expiresAt }
+// ── Quiz sessions ─────────────────────────────────────────────────────────────
+// quizId → { skill, level, lang, total, messages[], questions[], pending, nextIndex, expiresAt }
 const quizSessions = new Map();
 setInterval(() => {
   const now = Date.now();
-  for (const [id, session] of quizSessions) {
-    if (session.expiresAt < now) quizSessions.delete(id);
-  }
+  for (const [id, s] of quizSessions) if (s.expiresAt < now) quizSessions.delete(id);
 }, 10 * 60 * 1000);
+
+const QUIZ_TOTAL =2;
+// TODO: re-enable 'open' when ready → ['multiple_choice', 'open', 'multiple_choice', 'code_trace', 'open']
+const QUIZ_TYPES = ['multiple_choice', 'code_trace', 'multiple_choice', 'multiple_choice', 'code_trace'];
+
+const QUIZ_SYSTEM = `You are LikeTalent, a technical quiz generator. Each response must be ONLY a valid JSON object — no markdown, no prose, no extra text outside the JSON. Never repeat a question theme already used in this session.`;
+
+function sanitizeQuestion(q) {
+  return { type: q.type, question: q.question, code: q.code || null, options: q.options || null };
+}
+
+async function generateOneQuestion(session, n, attempt = 1) {
+  const { skill, level, lang, total } = session;
+  const type = QUIZ_TYPES[(n - 1) % QUIZ_TYPES.length];
+  const langNote = lang === 'es' ? 'Escribe TODO en español.' : 'Write everything in English.';
+
+  const usedTypes = session.questions.map(q => q.type).join(', ') || 'none';
+
+  const userContent = n === 1
+    ? `Generate question ${n} of ${total} to validate REAL proficiency in "${skill}" at ${level} level. ${langNote}
+
+Use type: ${type}. Rules:
+- No questions answerable by googling a definition
+- Real-world scenario-based questions only
+- For code_trace: use non-trivial edge cases
+- For open: require reasoning, not fact recitation
+
+Return ONLY a JSON object (include only fields relevant to the type):
+{"type":"multiple_choice","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}
+{"type":"code_trace","question":"...","code":"// snippet","options":["A","B","C","D"],"correct":0,"explanation":"..."}`
+    : `Generate question ${n} of ${total} for "${skill}" at ${level} level. ${langNote}
+Use type: ${type}. Types used so far: ${usedTypes}. Avoid repeating themes.
+Return ONLY a valid JSON object.`;
+
+  // Keep only last 2 messages (1 Q&A) to avoid context overflow on long sessions
+  const recentMessages = session.messages.slice(-2);
+  const newMessages = [...recentMessages, { role: 'user', content: userContent }];
+
+  const t0 = Date.now();
+  const raw = await callAIMessages(newMessages, { maxTokens: 1500, prefill: '{', system: QUIZ_SYSTEM });
+  console.log(`[Quiz] Q${n} AI: ${Date.now() - t0}ms | len=${raw.length}`);
+
+  const question = parseJSON(raw);
+  if (!question || !question.type || !question.question) {
+    console.error(`[Quiz] Q${n} parse failed | raw:`, raw.slice(0, 300));
+    if (attempt < 2) {
+      console.log(`[Quiz] Q${n} retrying (attempt ${attempt + 1})...`);
+      return generateOneQuestion(session, n, attempt + 1);
+    }
+    throw new Error(`Invalid question format for Q${n}`);
+  }
+
+  // Store only the last Q&A pair for context (keeps messages short)
+  session.messages = [
+    { role: 'user', content: userContent },
+    { role: 'assistant', content: raw }
+  ];
+  session.questions.push(question);
+  return question;
+}
 
 app.post('/api/generate-quiz', async (req, res) => {
   try {
     const { skill, level = 'mid', lang = 'en' } = req.body;
     if (!skill) return res.status(400).json({ error: 'skill required' });
 
-    const langLabel = lang === 'es' ? 'Spanish' : 'English';
-    const langNote  = lang === 'es' ? 'Escribe TODO en español.' : 'Write everything in English.';
-
-    console.log('[Quiz] Generating for:', skill, level, lang);
-
-    const prompt = `You are LikeTalent, a talent validator. Generate a quiz with 8 questions to validate REAL proficiency in "${skill}" at ${level} level. ${langNote}
-
-Mix these types (distribute them across the 8 questions):
-- "multiple_choice": 4 options, one correct. Good for concepts and best-practices.
-- "code_trace": show a short code snippet, ask what it outputs or what is wrong. Use "multiple_choice" format with options.
-- "open": a practical/logical reasoning question. No options. The candidate writes a free-text answer.
-
-Anti-AI rules:
-- Avoid questions that can be answered by simply googling a definition.
-- Prefer "given this real situation, what would you do and why?" scenarios.
-- For code_trace, use non-trivial logic (closures, async, edge cases, type coercion, etc.).
-- Open questions must require reasoning, not just reciting facts.
-
-Respond ONLY with a valid JSON array, no markdown:
-[
-  {
-    "type": "multiple_choice",
-    "question": "...",
-    "options": ["A","B","C","D"],
-    "correct": 0,
-    "explanation": "..."
-  },
-  {
-    "type": "code_trace",
-    "question": "What does this code output?",
-    "code": "// short snippet here",
-    "options": ["A","B","C","D"],
-    "correct": 2,
-    "explanation": "..."
-  },
-  {
-    "type": "open",
-    "question": "Practical/logical question here...",
-    "model_answer": "A strong answer should mention: ...",
-    "explanation": "..."
-  }
-]`;
-
-    const raw = await callAI(prompt, { maxTokens: 8000, prefill: '[' });
-    console.log('[Quiz] Raw length:', raw.length, '| preview:', raw.slice(0, 80));
-
-    const questions = parseJSON(raw);
-    if (!Array.isArray(questions) || questions.length === 0) {
-      console.error('[Quiz] Parse failed. Last 300:', raw.slice(-300));
-      return res.status(500).json({ error: 'AI did not return valid quiz format' });
-    }
-
+    const t0 = Date.now();
     const quizId = require('crypto').randomUUID();
-    quizSessions.set(quizId, {
-      skill, level, lang, questions,
+    const session = {
+      skill, level, lang, total: QUIZ_TOTAL,
+      messages: [], questions: [],
+      pending: null, nextIndex: 2,
       expiresAt: Date.now() + 30 * 60 * 1000
+    };
+    quizSessions.set(quizId, session);
+    console.log(`[Quiz] START quizId=${quizId} skill="${skill}" level=${level} lang=${lang}`);
+
+    // Generate Q1 synchronously so we can respond immediately
+    const q1 = await generateOneQuestion(session, 1);
+    console.log(`[Quiz] Q1 ready in ${Date.now() - t0}ms — launching Q2 in background`);
+
+    // Q2 starts in background while user reads Q1
+    session.pending = generateOneQuestion(session, 2).catch(e => {
+      console.error('[Quiz] Background Q2 error:', e.message);
     });
 
-    console.log('[Quiz] Generated', questions.length, 'questions |', quizId);
-
-    // Send sanitized — no correct index or model_answer
-    const sanitized = questions.map(q => ({
-      type: q.type,
-      question: q.question,
-      code: q.code || null,
-      options: q.options || null
-    }));
-
-    res.json({ quizId, skill, level, lang, questions: sanitized });
+    res.json({ quizId, skill, level, lang, total: QUIZ_TOTAL, questionNumber: 1, question: sanitizeQuestion(q1) });
 
   } catch (error) {
-    console.error('[Quiz] Error:', error.message);
+    console.error('[Quiz] generate-quiz error:', error.message);
+    res.status(500).json({ error: 'Failed to generate quiz' });
+  }
+});
+
+// Called by frontend when user clicks "Next"
+app.post('/api/quiz-next', async (req, res) => {
+  try {
+    const { quizId } = req.body;
+    if (!quizId) return res.status(400).json({ error: 'quizId required' });
+
+    const session = quizSessions.get(quizId);
+    if (!session) return res.status(404).json({ error: 'Quiz session not found or expired' });
+
+    const n = session.nextIndex;
+    if (n > session.total) return res.json({ done: true, total: session.total });
+
+    const t0 = Date.now();
+    console.log(`[Quiz] quiz-next: awaiting Q${n}...`);
+
+    // Await the background-generated question
+    if (session.pending) { await session.pending; session.pending = null; }
+
+    const question = session.questions[n - 1];
+    if (!question) return res.status(500).json({ error: `Q${n} generation failed` });
+
+    console.log(`[Quiz] Q${n} served (waited ${Date.now() - t0}ms)`);
+
+    // Pre-generate next question in background
+    session.nextIndex = n + 1;
+    if (n < session.total) {
+      session.pending = generateOneQuestion(session, n + 1).catch(e => {
+        console.error(`[Quiz] Background Q${n + 1} error:`, e.message);
+      });
+    }
+
+    res.json({ quizId, questionNumber: n, total: session.total, question: sanitizeQuestion(question), done: false });
+
+  } catch (error) {
+    console.error('[Quiz] quiz-next error:', error.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1740,80 +1791,119 @@ const CONTRACT_ABI     = [
 ];
 
 // Build a PDF certificate and return its Buffer
-function buildCertificatePDF({ skill, score, level, wallet, issuedAt }) {
+async function buildCertificatePDF({ skill, score, level, wallet, issuedAt, contentHash, explorerUrl }) {
+  const QRCode = require('qrcode');
+
+  const verifyUrl = explorerUrl || `https://explorer-zk.tanenbaum.io/address/${CONTRACT_ADDRESS}`;
+
+  // Generate QR as PNG buffer
+  const qrBuffer = await QRCode.toBuffer(verifyUrl, {
+    type: 'png',
+    width: 110,
+    margin: 1,
+    color: { dark: '#10b981', light: '#0a0a0a' }
+  });
+
   return new Promise((resolve, reject) => {
-    const doc    = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 60 });
+    const doc    = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0 });
     const chunks = [];
     doc.on('data',  chunk => chunks.push(chunk));
     doc.on('end',   () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const W = doc.page.width;
-    const H = doc.page.height;
+    const W = doc.page.width;   // 841.89
+    const H = doc.page.height;  // 595.28
 
-    // Background
+    // ── Background ───────────────────────────────────────────────────────────
     doc.rect(0, 0, W, H).fill('#0a0a0a');
 
-    // Border
-    doc.rect(24, 24, W - 48, H - 48).lineWidth(1.5).stroke('#10b981');
-
+    // Outer border
+    doc.rect(20, 20, W - 40, H - 40).lineWidth(1.5).stroke('#10b981');
     // Inner accent border
-    doc.rect(30, 30, W - 60, H - 60).lineWidth(0.5).stroke('#064e3b');
+    doc.rect(26, 26, W - 52, H - 52).lineWidth(0.4).stroke('#064e3b');
 
-    // Title
-    doc.fillColor('#10b981').fontSize(11).font('Helvetica')
-       .text('ETHV TALENT PLATFORM', 0, 58, { align: 'center', characterSpacing: 4 });
+    // ── Header ───────────────────────────────────────────────────────────────
+    doc.fillColor('#10b981').fontSize(10).font('Helvetica')
+       .text('LIKETALENT PLATFORM', 0, 46, { align: 'center', characterSpacing: 5 });
 
-    // Main heading
-    doc.fillColor('#ffffff').fontSize(38).font('Helvetica-Bold')
-       .text('SKILL CERTIFICATE', 0, 85, { align: 'center' });
+    doc.fillColor('#ffffff').fontSize(34).font('Helvetica-Bold')
+       .text('SKILL CERTIFICATE', 0, 66, { align: 'center' });
 
     // Divider
-    doc.moveTo(W / 2 - 120, 140).lineTo(W / 2 + 120, 140).lineWidth(1).stroke('#10b981');
+    doc.moveTo(W / 2 - 140, 114).lineTo(W / 2 + 140, 114).lineWidth(0.8).stroke('#10b981');
 
-    // Body text
-    doc.fillColor('#a1a1aa').fontSize(13).font('Helvetica')
-       .text('This certifies that the holder of wallet', 0, 160, { align: 'center' });
+    // ── Middle row: text left | QR right ─────────────────────────────────────
+    const midY = 128;
+    const qrSize = 110;
+    const qrX   = W - 80 - qrSize;   // right side
+    const qrY   = midY;
+    const textW  = qrX - 60;          // text column width
 
-    // Wallet address
-    doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold')
-       .text(wallet, 0, 182, { align: 'center' });
+    // "This certifies that the holder"
+    doc.fillColor('#a1a1aa').fontSize(12).font('Helvetica')
+       .text('This certifies that the holder', 60, midY, { width: textW });
 
-    doc.fillColor('#a1a1aa').fontSize(13).font('Helvetica')
-       .text('has successfully validated the skill', 0, 210, { align: 'center' });
+    // Verify transaction label + URL (clickable)
+    doc.fillColor('#10b981').fontSize(8.5).font('Helvetica-Bold')
+       .text('Verify transaction', 60, midY + 22, { width: textW });
 
-    // Skill name
-    doc.fillColor('#10b981').fontSize(44).font('Helvetica-Bold')
-       .text(skill, 0, 235, { align: 'center' });
+    doc.fillColor('#10b981').fontSize(7.5).font('Helvetica')
+       .text(verifyUrl, 60, midY + 36, {
+         width: textW,
+         link: verifyUrl,
+         underline: true,
+       });
 
-    // Score + Level
-    const scoreX = W / 2 - 160;
+    // QR code
+    doc.image(qrBuffer, qrX, qrY, { width: qrSize, height: qrSize });
+
+    // QR label
+    doc.fillColor('#3f3f46').fontSize(7).font('Helvetica')
+       .text('Scan to verify', qrX, qrY + qrSize + 3, { width: qrSize, align: 'center' });
+
+    // "has successfully validated the skill"
+    doc.fillColor('#a1a1aa').fontSize(12).font('Helvetica')
+       .text('has successfully validated the skill', 60, midY + 60, { width: textW });
+
+    // ── Skill name ────────────────────────────────────────────────────────────
+    doc.fillColor('#10b981').fontSize(48).font('Helvetica-Bold')
+       .text(skill, 0, midY + 86, { align: 'center' });
+
+    // ── Score + Level boxes ───────────────────────────────────────────────────
+    const boxY  = midY + 152;
+    const boxW  = 130;
+    const boxH  = 68;
+    const scoreX = W / 2 - boxW - 10;
     const levelX = W / 2 + 10;
-    const boxY   = 305;
 
-    doc.rect(scoreX, boxY, 140, 72).fill('#052e16');
-    doc.fillColor('#10b981').fontSize(9).font('Helvetica')
-       .text('SCORE', scoreX, boxY + 10, { width: 140, align: 'center', characterSpacing: 2 });
-    doc.fillColor('#ffffff').fontSize(36).font('Helvetica-Bold')
-       .text(`${score}%`, scoreX, boxY + 24, { width: 140, align: 'center' });
+    doc.rect(scoreX, boxY, boxW, boxH).fill('#052e16');
+    doc.fillColor('#10b981').fontSize(8).font('Helvetica')
+       .text('SCORE', scoreX, boxY + 10, { width: boxW, align: 'center', characterSpacing: 2 });
+    doc.fillColor('#ffffff').fontSize(34).font('Helvetica-Bold')
+       .text(`${score}%`, scoreX, boxY + 24, { width: boxW, align: 'center' });
 
-    doc.rect(levelX, boxY, 140, 72).fill('#052e16');
-    doc.fillColor('#10b981').fontSize(9).font('Helvetica')
-       .text('LEVEL', levelX, boxY + 10, { width: 140, align: 'center', characterSpacing: 2 });
-    doc.fillColor('#ffffff').fontSize(28).font('Helvetica-Bold')
-       .text(level.toUpperCase(), levelX, boxY + 30, { width: 140, align: 'center' });
+    doc.rect(levelX, boxY, boxW, boxH).fill('#052e16');
+    doc.fillColor('#10b981').fontSize(8).font('Helvetica')
+       .text('LEVEL', levelX, boxY + 10, { width: boxW, align: 'center', characterSpacing: 2 });
+    doc.fillColor('#ffffff').fontSize(26).font('Helvetica-Bold')
+       .text(level.toUpperCase(), levelX, boxY + 28, { width: boxW, align: 'center' });
 
-    // Date
-    doc.fillColor('#52525b').fontSize(10).font('Helvetica')
-       .text(`Issued: ${issuedAt}`, 0, H - 90, { align: 'center' });
+    // ── Footer ────────────────────────────────────────────────────────────────
+    const footerTop = H - 90;
 
-    // Network badge
-    doc.fillColor('#10b981').fontSize(9).font('Helvetica')
-       .text('Blockchain: zkSYS Testnet · Chain ID: 57057', 0, H - 72, { align: 'center', characterSpacing: 1 });
+    doc.moveTo(60, footerTop).lineTo(W - 60, footerTop).lineWidth(0.4).stroke('#1f1f1f');
 
-    // Contract address
-    doc.fillColor('#3f3f46').fontSize(8).font('Helvetica')
-       .text(`Contract: ${CONTRACT_ADDRESS}`, 0, H - 54, { align: 'center' });
+    doc.fillColor('#52525b').fontSize(9).font('Helvetica')
+       .text(`Issued: ${issuedAt}`, 0, footerTop + 8, { align: 'center' });
+
+    doc.fillColor('#10b981').fontSize(8).font('Helvetica')
+       .text('Blockchain: zkSYS Testnet · Chain ID: 57057', 0, footerTop + 22, { align: 'center', characterSpacing: 1 });
+
+    doc.fillColor('#3f3f46').fontSize(7.5).font('Helvetica')
+       .text(`Contract: ${CONTRACT_ADDRESS}`, 0, footerTop + 36, { align: 'center' });
+
+    doc.fillColor('#3f3f46').fontSize(7).font('Helvetica')
+       .text(`SHA-256: ${contentHash}`, 0, footerTop + 49, { align: 'center' });
 
     doc.end();
   });
@@ -1832,14 +1922,13 @@ app.post('/api/mint-certificate', async (req, res) => {
 
     const issuedAt = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // 1. Generate PDF
-    const pdfBuffer = await buildCertificatePDF({ skill, score, level, wallet, issuedAt });
+    // 1. Compute deterministic content hash (wallet:skill:level:score:date)
+    const crypto = require('crypto');
+    const contentHash = crypto.createHash('sha256')
+      .update(`${wallet}:${skill}:${level}:${score}:${issuedAt}`)
+      .digest('hex');
+    const cvHashHex = '0x' + contentHash;
 
-    // 2. Hash the PDF (sha256 → hex → bytes32 for the contract)
-    const pdfHash    = require('crypto').createHash('sha256').update(pdfBuffer).digest('hex');
-    const cvHashHex  = '0x' + pdfHash;                      // 0x + 64 hex chars = bytes32
-
-    // 3. Save to Supabase
     let tokenId  = null;
     let txHash   = null;
     let mintError = null;
@@ -1847,20 +1936,7 @@ app.post('/api/mint-certificate', async (req, res) => {
     const SUPABASE_URL = process.env.SUPABASE_URL || '';
     const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 
-    if (SUPABASE_URL && SUPABASE_KEY) {
-      await fetch(`${SUPABASE_URL}/rest/v1/certificates`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify({ wallet, skill, score, level, pdf_hash: pdfHash })
-      });
-    }
-
-    // 4. Mint NFT on zkSYS (optional — requires PRIVATE_KEY in env)
+    // 2. Mint NFT on zkSYS (optional — requires PRIVATE_KEY in env)
     const PRIVATE_KEY = process.env.ZKSYS_PRIVATE_KEY || process.env.PRIVATE_KEY || '';
     if (PRIVATE_KEY) {
       try {
@@ -1878,34 +1954,12 @@ app.post('/api/mint-certificate', async (req, res) => {
           ]
         })).toString('base64')}`;
 
-        const tx = await contract.mintCertificate(
-          wallet,
-          skill,
-          score,
-          level,
-          tokenURI,
-          cvHashHex
-        );
+        const tx = await contract.mintCertificate(wallet, skill, score, level, tokenURI, cvHashHex);
         const receipt = await tx.wait();
-        txHash  = receipt.hash;
+        txHash = receipt.hash;
 
-        // Read the tokenId from the Transfer event or totalCertificates
         const total = await contract.totalCertificates();
         tokenId = Number(total) - 1;
-
-        // Update Supabase with tokenId + txHash
-        if (SUPABASE_URL && SUPABASE_KEY) {
-          await fetch(`${SUPABASE_URL}/rest/v1/certificates?wallet=eq.${encodeURIComponent(wallet)}&pdf_hash=eq.${pdfHash}&order=created_at.desc&limit=1`, {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${SUPABASE_KEY}`,
-              'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify({ token_id: tokenId, tx_hash: txHash })
-          });
-        }
 
         console.log(`[Mint] ✅ tokenId=${tokenId} tx=${txHash}`);
       } catch (e) {
@@ -1914,14 +1968,34 @@ app.post('/api/mint-certificate', async (req, res) => {
       }
     }
 
+    const explorerUrl = txHash ? `https://explorer-zk.tanenbaum.io/tx/${txHash}` : null;
+
+    // 3. Build PDF with contentHash + explorerUrl already known
+    const pdfBuffer = await buildCertificatePDF({ skill, score, level, wallet, issuedAt, contentHash, explorerUrl });
+    const pdfHash   = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
+
+    // 4. Save to Supabase
+    if (SUPABASE_URL && SUPABASE_KEY) {
+      await fetch(`${SUPABASE_URL}/rest/v1/certificates`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({ wallet, skill, score, level, pdf_hash: pdfHash, content_hash: contentHash, tx_hash: txHash, token_id: tokenId })
+      });
+    }
+
     res.json({
       success: true,
       pdfBase64: pdfBuffer.toString('base64'),
-      pdfHash,
+      pdfHash: contentHash,   // expose the content hash (deterministic & verifiable)
       tokenId,
       txHash,
       mintError,
-      explorerUrl: txHash ? `https://explorer-zk.tanenbaum.io/tx/${txHash}` : null
+      explorerUrl
     });
 
   } catch (error) {

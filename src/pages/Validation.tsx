@@ -31,6 +31,7 @@ interface QuestionResult {
 }
 
 type Step = 'select' | 'loading' | 'test' | 'submitting' | 'result';
+type FetchState = 'idle' | 'fetching';
 type ClaimState = 'idle' | 'loading' | 'done' | 'error';
 
 interface ClaimResult {
@@ -123,8 +124,10 @@ export default function Validation() {
   const [selectedSkill, setSelectedSkill] = useState('');
   const [selectedLevel, setSelectedLevel] = useState('mid');
   const [quizId, setQuizId] = useState('');
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [currentIdx, setCurrentIdx] = useState(0);
+  const [currentQ, setCurrentQ] = useState<Question | null>(null);
+  const [questionNumber, setQuestionNumber] = useState(1);
+  const [total, setTotal] = useState(5);
+  const [fetchState, setFetchState] = useState<FetchState>('idle');
   const [mcChosen, setMcChosen] = useState<number | null>(null);
   const [openText, setOpenText] = useState('');
   const [allAnswers, setAllAnswers] = useState<(number | string)[]>([]);
@@ -148,21 +151,22 @@ export default function Validation() {
   }, []);
 
   const skillList = cvSkills.length > 0 ? cvSkills.slice(0, 12) : DEFAULT_SKILLS;
-  const currentQ = questions[currentIdx];
-  const progress = questions.length > 0 ? (currentIdx / questions.length) * 100 : 0;
+  const progress = total > 0 ? (questionNumber / total) * 100 : 0;
+
+  const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
 
   const startQuiz = async () => {
     if (!selectedSkill) return;
     setStep('loading');
     setError('');
     setAllAnswers([]);
-    setCurrentIdx(0);
+    setQuestionNumber(1);
     setMcChosen(null);
     setOpenText('');
     setQuizResults([]);
+    setCurrentQ(null);
 
     try {
-      const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
       const res = await fetch(`${apiBase}/generate-quiz`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -170,9 +174,11 @@ export default function Validation() {
       });
       if (!res.ok) throw new Error(`Error ${res.status}`);
       const data = await res.json();
-      if (!data.questions?.length) throw new Error('No questions received');
+      if (!data.question) throw new Error('No question received');
       setQuizId(data.quizId);
-      setQuestions(data.questions);
+      setCurrentQ(data.question);
+      setTotal(data.total ?? 5);
+      setQuestionNumber(1);
       setStep('test');
     } catch (e: any) {
       setError(e.message || 'Failed to generate quiz');
@@ -181,54 +187,78 @@ export default function Validation() {
   };
 
   const canProceed = () => {
-    if (!currentQ) return false;
-    if (currentQ.type === 'open') return openText.trim().length > 10;
+    if (!currentQ || fetchState === 'fetching') return false;
     return mcChosen !== null;
   };
 
   const handleNext = async () => {
-    if (!canProceed()) return;
-    const answer = currentQ.type === 'open' ? openText.trim() : mcChosen!;
+    if (!canProceed() || !currentQ) return;
+    const answer = mcChosen!;
     const newAnswers = [...allAnswers, answer];
     setAllAnswers(newAnswers);
 
-    if (currentIdx < questions.length - 1) {
-      setCurrentIdx(i => i + 1);
+    if (questionNumber < total) {
+      // Fetch next pre-generated question
+      setFetchState('fetching');
       setMcChosen(null);
       setOpenText('');
-    } else {
-      // Submit
-      setStep('submitting');
       try {
-        const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
-        const res = await fetch(`${apiBase}/submit-quiz`, {
+        const res = await fetch(`${apiBase}/quiz-next`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quizId, answers: newAnswers }),
+          body: JSON.stringify({ quizId }),
         });
-        if (!res.ok) throw new Error(`Submit error ${res.status}`);
+        if (!res.ok) throw new Error(`Error ${res.status}`);
         const data = await res.json();
-        setFinalScore(data.score);
-        setPassed(data.passed);
-        setQuizResults(data.results);
-        setStep('result');
+        if (data.done) {
+          // shouldn't happen, but handle gracefully
+          submitQuiz(newAnswers);
+          return;
+        }
+        setCurrentQ(data.question);
+        setQuestionNumber(data.questionNumber);
       } catch (e: any) {
-        setError(e.message || 'Failed to submit quiz');
+        setError(e.message || 'Failed to load next question');
         setStep('select');
+      } finally {
+        setFetchState('idle');
       }
+    } else {
+      submitQuiz(newAnswers);
+    }
+  };
+
+  const submitQuiz = async (answers: (number | string)[]) => {
+    setStep('submitting');
+    try {
+      const res = await fetch(`${apiBase}/submit-quiz`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quizId, answers }),
+      });
+      if (!res.ok) throw new Error(`Submit error ${res.status}`);
+      const data = await res.json();
+      setFinalScore(data.score);
+      setPassed(data.passed);
+      setQuizResults(data.results);
+      setStep('result');
+    } catch (e: any) {
+      setError(e.message || 'Failed to submit quiz');
+      setStep('select');
     }
   };
 
   const reset = () => {
     setStep('select');
     setSelectedSkill('');
-    setQuestions([]);
+    setCurrentQ(null);
     setAllAnswers([]);
-    setCurrentIdx(0);
+    setQuestionNumber(1);
     setMcChosen(null);
     setOpenText('');
     setQuizResults([]);
     setError('');
+    setFetchState('idle');
     setClaimState('idle');
     setClaimResult(null);
     setClaimError('');
@@ -236,8 +266,11 @@ export default function Validation() {
 
   const claimBadge = async () => {
     if (!passed || claimState !== 'idle') return;
-    const wallet = address || import.meta.env.VITE_WALLET_BYPASS === 'true' ? (address || '0x0000000000000000000000000000000000000000') : null;
-    if (!wallet) { setClaimError('Connect your wallet first'); return; }
+    const wallet = address || null;
+    if (!wallet) {
+      setClaimError(lang === 'es' ? 'Conecta tu wallet para reclamar el certificado' : 'Connect your wallet to claim the certificate');
+      return;
+    }
 
     setClaimState('loading');
     setClaimError('');
@@ -414,7 +447,7 @@ export default function Validation() {
                 <ArrowLeft size={16} /> {t.exit}
               </button>
               <span className="text-zinc-400 text-sm font-medium">{selectedSkill} · {selectedLevel} · {lang.toUpperCase()}</span>
-              <span className="text-zinc-500 text-sm">{currentIdx + 1} / {questions.length}</span>
+              <span className="text-zinc-500 text-sm">{questionNumber} / {total}</span>
             </div>
 
             {/* Progress */}
@@ -425,7 +458,7 @@ export default function Validation() {
 
             {/* Question card */}
             <AnimatePresence mode="wait">
-              <motion.div key={currentIdx}
+              <motion.div key={questionNumber}
                 initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.2 }}
                 className="bg-zinc-950 border border-zinc-900 rounded-2xl p-6 space-y-5"
@@ -446,11 +479,6 @@ export default function Validation() {
                 )}
 
                 {/* Hint */}
-                {currentQ.type === 'open' && (
-                  <p className="text-yellow-500/70 text-xs flex items-center gap-1">
-                    <MessageSquare size={12} /> {t.openHint}
-                  </p>
-                )}
                 {currentQ.type === 'code_trace' && (
                   <p className="text-blue-400/70 text-xs flex items-center gap-1">
                     <Code2 size={12} /> {t.codeHint}
@@ -481,18 +509,6 @@ export default function Validation() {
                   </div>
                 )}
 
-                {/* Open answer */}
-                {currentQ.type === 'open' && (
-                  <textarea
-                    ref={textareaRef}
-                    value={openText}
-                    onChange={e => setOpenText(e.target.value)}
-                    placeholder={t.openPlaceholder}
-                    rows={5}
-                    className="w-full bg-zinc-900 border border-zinc-800 focus:border-emerald-500 text-white rounded-xl px-4 py-3 text-sm resize-none outline-none transition-colors placeholder-zinc-600"
-                  />
-                )}
-
                 {/* Next button */}
                 <motion.button
                   onClick={handleNext}
@@ -500,7 +516,9 @@ export default function Validation() {
                   whileHover={canProceed() ? { scale: 1.01 } : {}}
                   className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-black font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
                 >
-                  {currentIdx < questions.length - 1
+                  {fetchState === 'fetching'
+                    ? <><Loader2 size={18} className="animate-spin" /> {t.next}</>
+                    : questionNumber < total
                     ? <>{t.next} <ChevronRight size={18} /></>
                     : <>{t.seeResults} <Trophy size={18} /></>}
                 </motion.button>

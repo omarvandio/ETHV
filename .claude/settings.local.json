@@ -29,7 +29,8 @@
       "Bash(find /d/ETH/ETHV/src -name *.cjs -o -name index.js)",
       "Bash(grep -r \"pdf\\\\|PDF\\\\|certificate\\\\|Certificate\" /d/ETH/ETHV/.env* /d/ETH/ETHV/backend/.env*)",
       "Bash(xargs grep:*)",
-      "Bash(grep -rn \"claimBadge\\\\|claim\\\\|mint\\\\|Mint\" /d/ETH/ETHV/src --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)"
+      "Bash(grep -rn \"claimBadge\\\\|claim\\\\|mint\\\\|Mint\" /d/ETH/ETHV/src --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)",
+      "Bash(ls D:ETHETHVbackend*.js D:ETHETHVbackend*.cjs)"
     ]
   },
   "enableAllProjectMcpServers": true

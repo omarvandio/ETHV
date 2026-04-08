@@ -1,11 +1,53 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import apiClient from '../services/apiClient';
 import { useWallet } from '../hooks/useWallet';
-import { CheckCircle2, Clock, AlertCircle, TrendingUp } from 'lucide-react';
+import { CheckCircle2, Clock, AlertCircle, TrendingUp, Award, Loader2, Download, ExternalLink } from 'lucide-react';
 import { Skill } from '../types';
+
+type MintState = 'idle' | 'loading' | 'done' | 'error';
 
 export default function Dashboard() {
   const { address } = useWallet();
+  const [mintState, setMintState] = useState<MintState>('idle');
+  const [mintResult, setMintResult] = useState<any>(null);
+  const [mintError, setMintError] = useState('');
+  const [testSkill, setTestSkill] = useState('Solidity');
+  const [testLevel, setTestLevel] = useState('junior');
+  const [testScore, setTestScore] = useState(85);
+
+  const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
+
+  const effectiveAddress = address || (import.meta.env.VITE_WALLET_BYPASS === 'true' ? import.meta.env.VITE_TEST_WALLET || null : null);
+
+  const mintTestCertificate = async () => {
+    if (!effectiveAddress) { setMintError('Conecta tu wallet primero'); return; }
+    setMintState('loading');
+    setMintError('');
+    setMintResult(null);
+    try {
+      const res = await fetch(`${apiBase}/mint-certificate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet: effectiveAddress, skill: testSkill, score: testScore, level: testLevel }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      setMintResult(data);
+      setMintState('done');
+    } catch (e: any) {
+      setMintError(e.message || 'Error al generar certificado');
+      setMintState('error');
+    }
+  };
+
+  const downloadPDF = () => {
+    if (!mintResult?.pdfBase64) return;
+    const link = document.createElement('a');
+    link.href = `data:application/pdf;base64,${mintResult.pdfBase64}`;
+    link.download = `certificado-prueba-${testSkill}-${testLevel}.pdf`;
+    link.click();
+  };
 
   const { data: skills, isLoading } = useQuery<Skill[]>({
     queryKey: ['skills'],
@@ -111,6 +153,82 @@ export default function Dashboard() {
             <p className="text-zinc-400 text-sm leading-relaxed">
               Validating your core skills increases your visibility to top-tier Web3 projects by 400%.
             </p>
+          </section>
+
+          {/* ── Test Certificate ─────────────────────────────── */}
+          <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Award size={18} className="text-emerald-500" />
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider">Certificado de Prueba</h2>
+            </div>
+
+            <div className="space-y-2">
+              <input
+                value={testSkill}
+                onChange={e => setTestSkill(e.target.value)}
+                placeholder="Skill (ej: Solidity)"
+                className="w-full bg-zinc-900 border border-zinc-800 text-white text-sm rounded-xl px-3 py-2 outline-none focus:border-emerald-500 transition-colors placeholder-zinc-600"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={testLevel}
+                  onChange={e => setTestLevel(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-800 text-white text-sm rounded-xl px-3 py-2 outline-none focus:border-emerald-500 transition-colors"
+                >
+                  <option value="junior">Junior</option>
+                  <option value="mid">Mid</option>
+                  <option value="senior">Senior</option>
+                </select>
+                <input
+                  type="number"
+                  min={70} max={100}
+                  value={testScore}
+                  onChange={e => setTestScore(Number(e.target.value))}
+                  className="bg-zinc-900 border border-zinc-800 text-white text-sm rounded-xl px-3 py-2 outline-none focus:border-emerald-500 transition-colors"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={mintTestCertificate}
+              disabled={mintState === 'loading'}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 text-sm"
+            >
+              {mintState === 'loading'
+                ? <><Loader2 size={15} className="animate-spin" /> Generando…</>
+                : <><Award size={15} /> GENERAR CERTI - DE PRUEBA</>}
+            </button>
+
+            {mintError && (
+              <p className="text-red-400 text-xs">{mintError}</p>
+            )}
+
+            {mintState === 'done' && mintResult && (
+              <div className="space-y-2 pt-1">
+                <p className="text-emerald-400 text-xs font-bold flex items-center gap-1">
+                  <CheckCircle2 size={13} /> Certificado generado
+                </p>
+                <p className="text-zinc-600 text-xs font-mono break-all">SHA-256: {mintResult.pdfHash}</p>
+                {mintResult.txHash && (
+                  <p className="text-zinc-500 text-xs font-mono break-all">TX: {mintResult.txHash}</p>
+                )}
+                {mintResult.mintError && (
+                  <p className="text-amber-400 text-xs">Mint: {mintResult.mintError}</p>
+                )}
+                <div className="flex gap-2">
+                  <button onClick={downloadPDF}
+                    className="flex-1 flex items-center justify-center gap-1 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold px-3 py-2 rounded-lg transition-all">
+                    <Download size={12} /> PDF
+                  </button>
+                  {mintResult.explorerUrl && (
+                    <a href={mintResult.explorerUrl} target="_blank" rel="noopener noreferrer"
+                      className="flex-1 flex items-center justify-center gap-1 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition-all">
+                      <ExternalLink size={12} /> Explorer
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
         </div>
       </div>
