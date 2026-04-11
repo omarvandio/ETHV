@@ -135,30 +135,17 @@ function extractText(payload) {
 
 // ── Comandos ─────────────────────────────────────────────────────────────────
 
-agent.addCommand('/start', async ({ roomId }) => {
-  await agent.sendConnectionMessage(roomId,
-    `👋 Hola! Soy *ETHV*, tu asistente de validación de talento Web3.
+agent.addCommand('/start', async ({ roomId, message }) => {
+  const isChannel = message?.__typename === 'ChannelMessage' || message?.body?.includes('"t":"channel"');
+  const texto = `👋 Hola! Soy *ETHV*, tu asistente de validación de talento Web3.
 
-Esto es lo que puedo hacer por ti:
+📄 *Analizar CV* — mándame el link de tu CV (PDF/DOCX)
+📝 *Optimizar ATS* — escribe /optimizar después del análisis  
+✉️ *Cover Letter* — escribe /coverletter después del análisis
 
-📄 *Analizar tu CV*
-Mándame el link público de tu CV (PDF/DOCX) y te doy un análisis completo con score, skills detectados y recomendaciones.
-
-📝 *Optimizar tu CV para ATS*
-Escribe /optimizar después del análisis y genero una versión optimizada para pasar filtros automáticos.
-
-✉️ *Carta de presentación*
-Escribe /coverletter y genero una carta personalizada basada en tu CV.
-
----
-¿Por dónde empezamos? Mándame el link de tu CV 👆`
-  );
-});
-
-agent.addCommand('/hola', async ({ roomId }) => {
-  await agent.sendConnectionMessage(roomId,
-    '👋 Hola! Soy ETHV. Mándame el link de tu CV (PDF público) y lo analizo al instante.\n\nO escribe /start para ver todo lo que puedo hacer.'
-  );
+¿Empezamos? Mándame el link de tu CV 👆`;
+  if (isChannel) await agent.sendChannelMessage(roomId, texto);
+  else await agent.sendConnectionMessage(roomId, texto);
 });
 
 agent.addCommand('/optimizar', async ({ roomId }) => {
