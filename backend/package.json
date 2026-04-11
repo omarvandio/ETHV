@@ -8,6 +8,7 @@
     "dev": "node --watch index.cjs"
   },
   "dependencies": {
+    "@superdapp/agents": "^1.0.2",
     "canvas": "^3.2.1",
     "cors": "^2.8.6",
     "docx": "^9.5.0",
