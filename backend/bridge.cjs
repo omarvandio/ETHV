@@ -202,4 +202,3 @@ app.post('/webhook', async function(req, res) {
 
 app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v3', sessions: sessions.size }); });
 app.listen(PORT, function() { console.log('[ETHV] Puerto', PORT, 'listo'); });
-BRIDGE
