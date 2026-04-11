@@ -24,7 +24,7 @@ function extractLink(text) {
 
 function convertDriveLink(url) {
   const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (match) return 'https://drive.google.com/uc?export=download&id=' + match[1];
+  if (match) return 'https://drive.google.com/uc?export=download&confirm=t&id=' + match[1];
   return url;
 }
 
@@ -100,7 +100,6 @@ async function send(agent, isChannel, roomId, chatId, msg) {
     await agent.sendConnectionMessage(chatId || roomId, msg);
   }
 }
-
 app.post('/webhook', async function(req, res) {
   res.status(200).send('OK');
   try {
