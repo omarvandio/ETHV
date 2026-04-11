@@ -118,7 +118,7 @@ app.post('/webhook', async function(req, res) {
 if (payload.fileKey && payload.fileMime === 'application/pdf') {
   await send(agent, isChannel, roomId, chatId, 'Descargando tu CV adjunto...');
   try {
-    const fileUrl = 'https://api.superdapp.ai/' + payload.fileKey;
+    const fileUrl = 'https://files.superdapp.ai/' + payload.fileKey;
     const dl = await axios.get(fileUrl, {
       responseType: 'arraybuffer',
       timeout: 20000,
