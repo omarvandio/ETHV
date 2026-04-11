@@ -134,9 +134,10 @@ function extractText(payload) {
 }
 
 // ── Comandos ─────────────────────────────────────────────────────────────────
-
-agent.addCommand('/start', async ({ roomId, message }) => {
-  const isChannel = message?.__typename === 'ChannelMessage' || message?.body?.includes('"t":"channel"');
+const isChannel = message?.__typename === 'ChannelMessage';
+const channelRoomId = message?.roomId || roomId;
+agent.addCommand('/start', async ({ roomId, message }) => {?.includes
+  ('"t":"channel"');
   const texto = `👋 Hola! Soy *ETHV*, tu asistente de validación de talento Web3.
 
 📄 *Analizar CV* — mándame el link de tu CV (PDF/DOCX)
@@ -144,8 +145,8 @@ agent.addCommand('/start', async ({ roomId, message }) => {
 ✉️ *Cover Letter* — escribe /coverletter después del análisis
 
 ¿Empezamos? Mándame el link de tu CV 👆`;
-  if (isChannel) await agent.sendChannelMessage(roomId, texto);
-  else await agent.sendConnectionMessage(roomId, texto);
+if (isChannel) await agent.sendChannelMessage(channelRoomId, texto);
+else await agent.sendConnectionMessage(channelRoomId, texto);
 });
 
 agent.addCommand('/optimizar', async ({ roomId }) => {
