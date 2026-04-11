@@ -201,7 +201,7 @@ agent.addCommand('/coverletter', async ({ roomId }) => {
 
 app.post('/webhook', async (req, res) => {
   res.status(200).send('OK');
-  console.log('[ETHV] RAW:', JSON.stringify(req.body).substring(0, 500));
+  console.log('[ETHV] RAW FULL:', JSON.stringify(req.body));
   try {
     const payload = req.body;
     if (payload?.challenge) return;
