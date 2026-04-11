@@ -113,6 +113,7 @@ app.post('/webhook', async function(req, res) {
     const roomId = payload && payload.roomId;
     const chatId = payload && payload.chatId;
 
+    if (payload.fileKey) console.log('[ETHV] FILE:', JSON.stringify({fileKey: payload.fileKey, fileMime: payload.fileMime, fileSize: payload.fileSize}));
     console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| channel:', isChannel, '| room:', roomId);
 
     if (!text || isBot) return;
