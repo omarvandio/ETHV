@@ -192,8 +192,12 @@ if (payload.fileKey && payload.fileMime === 'application/pdf') {
       try {
         const dl = await downloadFile(link);
         const result = await callBackend('/api/analyze-cv', { file: dl.file, filename: dl.filename });
-        sessions.set(roomId, { cvData: result, timestamp: Date.now() });
-        await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
+        if (!result || !result.name) {
+  await send(agent, isChannel, roomId, chatId, 'El backend esta procesando, intenta de nuevo en 30 segundos.');
+  return;
+}
+sessions.set(roomId, { cvData: result, timestamp: Date.now() });
+await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
       } catch(e) {
         console.error('[ETHV] CV error:', e.message);
         await send(agent, isChannel, roomId, chatId, 'No pude analizar ese archivo. Asegurate que el link sea publico y directo al archivo (PDF, DOCX o TXT).');
