@@ -163,13 +163,13 @@ if (payload.fileKey && payload.fileMime === 'application/pdf') {
         await send(agent, isChannel, roomId, chatId, 'Primero analiza tu CV. Mandame el link de tu CV (PDF/DOCX).');
         return;
       }
-      await send(agent, isChannel, roomId, chatId, 'Generando carta de presentacion...');
-      try {
-        const result = await callBackend('/api/improve-cv', { cvData: session.cvData, lang: 'es', mode: 'cover_letter' });
-        await send(agent, isChannel, roomId, chatId, formatCoverLetter(result));
-      } catch(e) {
-        await send(agent, isChannel, roomId, chatId, 'Error al generar carta. Intenta de nuevo.');
-      }
+      await send(..., 'Generando carta de presentacion...');
+  try {
+    const result = await callBackend('/api/improve-cv', ...
+    await send(..., formatCoverLetter(result));
+  } catch(e) {
+    await send(..., 'Error al generar carta...');
+  }
       return;
     }
 
