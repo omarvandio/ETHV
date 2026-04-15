@@ -157,19 +157,22 @@ if (payload.fileKey && payload.fileMime === 'application/pdf') {
       return;
     }
 
-    if (text === '/coverletter') {
+    
+     if (text === '/coverletter') {
       const session = sessions.get(roomId);
       if (!session || !session.cvData) {
         await send(agent, isChannel, roomId, chatId, 'Primero analiza tu CV. Mandame el link de tu CV (PDF/DOCX).');
         return;
       }
-      await send(..., 'Generando carta de presentacion...');
-  try {
-    const result = await callBackend('/api/improve-cv', ...
-    await send(..., formatCoverLetter(result));
-  } catch(e) {
-    await send(..., 'Error al generar carta...');
-  }
+      await send(agent, isChannel, roomId, chatId, 'Generando carta de presentacion...');
+      try {
+        const cv = session.cvData;
+        const prompt = 'Genera una carta de presentacion profesional en espanol para ' + (cv.name || 'el candidato') + ', que trabaja como ' + (cv.current_position || 'profesional') + ' con skills en ' + (cv.skills || []).slice(0,5).join(', ') + '. Ubicacion: ' + (cv.location || 'Peru') + '. La carta debe ser formal, de 3 parrafos, lista para enviar a un reclutador.';
+        const carta = await askGroq(prompt);
+        await send(agent, isChannel, roomId, chatId, 'Carta de Presentacion:\n\n' + carta);
+      } catch(e) {
+        await send(agent, isChannel, roomId, chatId, 'Error al generar carta. Intenta de nuevo.');
+      }
       return;
     }
 
