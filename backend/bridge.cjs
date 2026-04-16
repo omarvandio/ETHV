@@ -168,6 +168,27 @@ app.post('/webhook', async function(req, res) {
       }
       return;
     }
+    const quizSession = sessions.get(roomId + '_quiz');
+    if (quizSession && !text.startsWith('/')) {
+      const answer = text.trim();
+      quizSession.answers.push(answer);
+      quizSession.current++;
+      
+      if (quizSession.current < quizSession.questions.length) {
+        const q = quizSession.questions[quizSession.current];
+        let msg = 'Pregunta ' + (quizSession.current + 1) + '/' + quizSession.questions.length + '\n\n' + q.question;
+        if (q.options) {
+          msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
+        }
+        await send(agent, isChannel, roomId, chatId, msg);
+      } else {
+        sessions.delete(roomId + '_quiz');
+        const prompt = 'El usuario respondio un quiz de ' + quizSession.skill + ' con estas respuestas: ' + JSON.stringify(quizSession.answers) + '. Las preguntas fueron: ' + JSON.stringify(quizSession.questions.map(function(q) { return q.question; })) + '. Da una evaluacion breve en espanol: nivel detectado, que sabes bien y que mejorar.';
+        const eval_ = await askGroq(prompt);
+        await send(agent, isChannel, roomId, chatId, 'Quiz completado!\n\n' + eval_);
+      }
+      return;
+    }
 if (text.startsWith('/skills')) {
       const skill = text.replace('/skills', '').trim();
       if (!skill) {
