@@ -2,32 +2,47 @@ require('dotenv').config();
 const { SuperDappAgent } = require('@superdapp/agents');
 const axios = require('axios');
 const express = require('express');
+const { Provider, Wallet, Contract } = require('zksync-ethers');
+const { ethers } = require('ethers');
 
-const API_TOKEN = process.env.SUPERDAPP_TOKEN || '';
-const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
-const BACKEND_URL = process.env.BACKEND_URL || 'https://ethv.onrender.com';
-const PORT = process.env.BRIDGE_PORT || 3004;
+const API_TOKEN       = process.env.SUPERDAPP_TOKEN   || '';
+const GROQ_API_KEY    = process.env.GROQ_API_KEY      || '';
+const BACKEND_URL     = process.env.BACKEND_URL        || 'https://ethv.onrender.com';
+const MINTER_KEY      = process.env.MINTER_PRIVATE_KEY || process.env.ZKSYS_PRIVATE_KEY || process.env.PRIVATE_KEY || '';
+const PORT            = process.env.BRIDGE_PORT        || 3004;
 const MAX_TOOL_ROUNDS = 5;
+const PASS_SCORE      = 70; // Mínimo para aprobar y emitir certificado
 
-console.log('[ETHV] TOKEN:', API_TOKEN ? 'OK' : 'FALTA');
-console.log('[ETHV] GROQ:', GROQ_API_KEY ? 'OK' : 'FALTA');
+const CONTRACT_ADDRESS = '0x8786996dA2Ed941FA4a0Aa7F0226fe50976C1539';
+const ZKSYS_RPC        = 'https://rpc-zk.tanenbaum.io/';
+const EXPLORER_URL     = 'https://explorer-zk.tanenbaum.io';
+
+// ABI mínima del contrato SkillCertificate
+const CERT_ABI = [
+  'function mintCertificate(address to, string skillName, uint8 score, string level, string uri, bytes32 cvHash) external returns (uint256)',
+  'function totalCertificates() external view returns (uint256)'
+];
+
+console.log('[ETHV] TOKEN:',   API_TOKEN   ? 'OK' : 'FALTA');
+console.log('[ETHV] GROQ:',    GROQ_API_KEY ? 'OK' : 'FALTA');
+console.log('[ETHV] MINTER:',  MINTER_KEY   ? 'OK' : 'FALTA - no se podrán emitir certificados');
 
 const agent = new SuperDappAgent({ apiToken: API_TOKEN, baseUrl: 'https://api.superdapp.ai' });
 const app = express();
 app.use(express.json());
 
-// ─── Memoria por sesión ───────────────────────────────────────────────────────
-// sessions[roomId] = { cvData, history: [{role, content}], quizState }
+// ─── Sesiones ────────────────────────────────────────────────────────────────
+// sessions[roomId] = { cvData, history, quizState, pendingCertificate }
 const sessions = new Map();
 
 function getSession(roomId) {
   if (!sessions.has(roomId)) {
-    sessions.set(roomId, { cvData: null, history: [], quizState: null });
+    sessions.set(roomId, { cvData: null, history: [], quizState: null, pendingCertificate: null });
   }
   return sessions.get(roomId);
 }
 
-// ─── Tools disponibles para el LLM ───────────────────────────────────────────
+// ─── Tools del agente ─────────────────────────────────────────────────────────
 const TOOLS = [
   {
     type: 'function',
@@ -51,9 +66,8 @@ const TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          lang: { type: 'string', description: 'Idioma del CV: es o en', enum: ['es', 'en'] }
-        },
-        required: []
+          lang: { type: 'string', description: 'Idioma: es o en', enum: ['es', 'en'] }
+        }
       }
     }
   },
@@ -66,9 +80,8 @@ const TOOLS = [
         type: 'object',
         properties: {
           job_title: { type: 'string', description: 'Puesto al que aplica (opcional)' },
-          company: { type: 'string', description: 'Empresa destino (opcional)' }
-        },
-        required: []
+          company:   { type: 'string', description: 'Empresa destino (opcional)' }
+        }
       }
     }
   },
@@ -80,7 +93,7 @@ const TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          skill: { type: 'string', description: 'Nombre del skill a evaluar (ej: SolidWorks, Solidity, React)' },
+          skill: { type: 'string', description: 'Skill a evaluar (ej: SolidWorks, Solidity, React)' },
           level: { type: 'string', description: 'Nivel del quiz', enum: ['junior', 'mid', 'senior'], default: 'mid' }
         },
         required: ['skill']
@@ -90,12 +103,105 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'mint_certificate',
+      description: 'Emite un certificado de skill validado en la blockchain (zkSYS Testnet). Solo usar cuando el usuario aprobó el quiz con score >= 70 y proporcionó su wallet address.',
+      parameters: {
+        type: 'object',
+        properties: {
+          wallet_address: { type: 'string', description: 'Dirección Ethereum del usuario (0x...)' },
+          skill:          { type: 'string', description: 'Nombre del skill validado' },
+          score:          { type: 'number', description: 'Score obtenido (0-100)' },
+          level:          { type: 'string', description: 'Nivel: Junior, Mid o Senior' }
+        },
+        required: ['wallet_address', 'skill', 'score', 'level']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_user_profile',
-      description: 'Obtiene el perfil y datos del CV del usuario actual si fue analizado previamente.',
+      description: 'Obtiene el perfil del CV del usuario si fue analizado previamente.',
       parameters: { type: 'object', properties: {} }
     }
   }
 ];
+
+// ─── Blockchain: mint certificado ─────────────────────────────────────────────
+async function mintOnChain(walletAddress, skill, score, level, cvData) {
+  if (!MINTER_KEY) throw new Error('MINTER_PRIVATE_KEY no configurado en .env');
+
+  const provider = new Provider(ZKSYS_RPC);
+  const signer   = new Wallet(MINTER_KEY, provider);
+  const contract = new Contract(CONTRACT_ADDRESS, CERT_ABI, signer);
+
+  // Metadata inline (base64) — sin necesidad de IPFS
+  const metadata = {
+    name:        'ETHV Skill Certificate — ' + skill,
+    description: 'Certificado de skill validado por IA en ETHV. Skill: ' + skill + ' | Score: ' + score + '/100 | Nivel: ' + level,
+    image:       'https://ethv-1.onrender.com/certificate-badge.png',
+    attributes: [
+      { trait_type: 'Skill',      value: skill },
+      { trait_type: 'Score',      value: score },
+      { trait_type: 'Level',      value: level },
+      { trait_type: 'Issued',     value: new Date().toISOString().split('T')[0] },
+      { trait_type: 'Platform',   value: 'ETHV' },
+      { trait_type: 'Network',    value: 'zkSYS Testnet' }
+    ]
+  };
+  const uri = 'data:application/json;base64,' + Buffer.from(JSON.stringify(metadata)).toString('base64');
+
+  // cvHash: keccak256 del nombre+skills del usuario (o ceros si no hay CV)
+  let cvHash = ethers.ZeroHash;
+  if (cvData && cvData.name) {
+    const raw = cvData.name + (cvData.skills || []).join(',');
+    cvHash = ethers.keccak256(ethers.toUtf8Bytes(raw));
+  }
+
+  const tx = await contract.mintCertificate(walletAddress, skill, score, level, uri, cvHash);
+  const receipt = await tx.wait();
+
+  // Extraer tokenId del event CertificateMinted
+  let tokenId = null;
+  if (receipt && receipt.logs) {
+    for (const log of receipt.logs) {
+      try {
+        const parsed = contract.interface.parseLog(log);
+        if (parsed && parsed.name === 'CertificateMinted') {
+          tokenId = parsed.args.tokenId.toString();
+          break;
+        }
+      } catch(e) {}
+    }
+  }
+
+  return { txHash: tx.hash, tokenId, explorerTx: EXPLORER_URL + '/tx/' + tx.hash };
+}
+
+// ─── Evaluación del quiz (devuelve JSON estructurado) ─────────────────────────
+async function evaluateQuiz(skill, questions, answers) {
+  const prompt = 'Eres un evaluador técnico experto. El usuario respondió un quiz de "' + skill + '".\n\nPreguntas y respuestas:\n' +
+    questions.map(function(q, i) {
+      return (i + 1) + '. ' + q.question + '\n   Respuesta del usuario: ' + (answers[i] || '(sin respuesta)');
+    }).join('\n') +
+    '\n\nDevuelve EXACTAMENTE este JSON (sin markdown, sin explicación extra):\n{"score":85,"level":"Mid","passed":true,"evaluation":"Texto de evaluación breve en español de 2-3 oraciones con lo que sabe bien y qué mejorar."}';
+
+  const response = await axios.post(
+    'https://api.groq.com/openai/v1/chat/completions',
+    {
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 300,
+      temperature: 0.2
+    },
+    { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
+  );
+
+  const text = response.data.choices[0].message.content.trim();
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Respuesta del evaluador inválida');
+  return JSON.parse(match[0]);
+}
 
 // ─── Implementación de las tools ──────────────────────────────────────────────
 async function convertDriveLink(url) {
@@ -107,12 +213,10 @@ async function convertDriveLink(url) {
 async function downloadFile(url) {
   const directUrl = await convertDriveLink(url);
   const response = await axios.get(directUrl, {
-    responseType: 'arraybuffer',
-    timeout: 20000,
-    maxRedirects: 5,
+    responseType: 'arraybuffer', timeout: 20000, maxRedirects: 5,
     headers: { 'User-Agent': 'Mozilla/5.0' }
   });
-  const buffer = Buffer.from(response.data);
+  const buffer   = Buffer.from(response.data);
   const filename = url.includes('drive.google') ? 'cv.pdf' : (url.split('/').pop().split('?')[0] || 'cv.pdf');
   return { file: buffer.toString('base64'), filename };
 }
@@ -136,22 +240,14 @@ async function executeTool(toolName, args, session) {
 
   if (toolName === 'analyze_cv') {
     await wakeBackend();
-    const dl = await downloadFile(args.url);
+    const dl     = await downloadFile(args.url);
     const result = await callBackend('/api/analyze-cv', { file: dl.file, filename: dl.filename });
     session.cvData = result;
     return JSON.stringify({
-      name: result.name,
-      location: result.location,
-      current_position: result.current_position,
-      company: result.company,
-      skills: result.skills,
-      experience_years: result.experience_years,
-      score: result.overall_score,
-      level: result.level,
-      suggested_roles: result.suggested_roles,
-      strengths: result.strengths,
-      improvements: result.improvements,
-      web3_relevance: result.web3_relevance
+      name: result.name, location: result.location, current_position: result.current_position,
+      company: result.company, skills: result.skills, experience_years: result.experience_years,
+      score: result.overall_score, level: result.level, suggested_roles: result.suggested_roles,
+      strengths: result.strengths, improvements: result.improvements, web3_relevance: result.web3_relevance
     });
   }
 
@@ -161,38 +257,45 @@ async function executeTool(toolName, args, session) {
     return JSON.stringify({
       ats_score: result.ats_score,
       professional_summary: result.professional_summary || result.summary,
-      optimized_skills: result.skills,
-      improvements_applied: result.improvements_applied
+      optimized_skills: result.skills
     });
   }
 
   if (toolName === 'generate_cover_letter') {
     if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
-    const cv = session.cvData;
-    const target = args.job_title ? ' para el puesto de ' + args.job_title : '';
-    const company = args.company ? ' en ' + args.company : '';
-    const prompt = 'Genera una carta de presentacion profesional en espanol' + target + company + ' para ' + (cv.name || 'el candidato') + ', ' + (cv.current_position || 'profesional') + ' con ' + (cv.experience_years || '') + ' años de experiencia. Skills principales: ' + (cv.skills || []).slice(0, 5).join(', ') + '. Ubicacion: ' + (cv.location || 'Peru') + '. La carta debe ser formal, de 3 parrafos, lista para enviar a un reclutador. Solo devuelve la carta, sin explicaciones.';
-    const response = await axios.post(
+    const cv      = session.cvData;
+    const target  = args.job_title ? ' para el puesto de ' + args.job_title : '';
+    const company = args.company   ? ' en ' + args.company : '';
+    const prompt  = 'Genera una carta de presentacion profesional en espanol' + target + company + ' para ' + (cv.name || 'el candidato') + ', ' + (cv.current_position || 'profesional') + ' con skills en ' + (cv.skills || []).slice(0, 5).join(', ') + '. La carta debe ser formal, 3 parrafos, lista para enviar. Solo devuelve la carta.';
+    const r = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
       { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
     );
-    return JSON.stringify({ cover_letter: response.data.choices[0].message.content });
+    return JSON.stringify({ cover_letter: r.data.choices[0].message.content });
   }
 
   if (toolName === 'start_skill_quiz') {
-    const result = await callBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
+    const result    = await callBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
     const questions = result.questions || [];
     if (!questions.length) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
     session.quizState = { skill: args.skill, questions, current: 0, answers: [] };
     const q = questions[0];
     return JSON.stringify({
-      quiz_started: true,
-      skill: args.skill,
-      total_questions: questions.length,
-      first_question: q.question,
-      options: q.options || null
+      quiz_started:     true,
+      skill:            args.skill,
+      total_questions:  questions.length,
+      first_question:   q.question,
+      options:          q.options || null
     });
+  }
+
+  if (toolName === 'mint_certificate') {
+    if (!ethers.isAddress(args.wallet_address)) {
+      return JSON.stringify({ error: 'Wallet address inválida.' });
+    }
+    const result = await mintOnChain(args.wallet_address, args.skill, args.score, args.level, session.cvData);
+    return JSON.stringify(result);
   }
 
   if (toolName === 'get_user_profile') {
@@ -205,15 +308,10 @@ async function executeTool(toolName, args, session) {
 
 // ─── Loop del agente (ReAct) ─────────────────────────────────────────────────
 async function runAgent(userMessage, session) {
-  // Actualizar historial
   session.history.push({ role: 'user', content: userMessage });
+  if (session.history.length > 20) session.history = session.history.slice(-20);
 
-  // Limitar historial a últimas 10 turns para no saturar el contexto
-  if (session.history.length > 20) {
-    session.history = session.history.slice(-20);
-  }
-
-  const systemPrompt = 'Eres ETHV, un agente inteligente de validacion de talento Web3. Ayudas a profesionales a analizar su CV, validar sus skills y encontrar oportunidades en el ecosistema blockchain/Web3.\n\nTienes acceso a herramientas reales. Cuando el usuario te pida algo que requiera una herramienta, USALA en lugar de inventar respuestas.\n\nReglas:\n- Si el usuario manda un link que parece un CV (Google Drive, PDF, DOCX), llama analyze_cv automaticamente.\n- Si el usuario pide optimizar su CV, llama optimize_cv.\n- Si el usuario pide carta de presentacion, llama generate_cover_letter.\n- Si el usuario quiere validar un skill, llama start_skill_quiz.\n- Responde siempre en español, de forma breve y util.\n- Cuando devuelvas resultados de tools, presendalos de forma clara y estructurada.';
+  const systemPrompt = 'Eres ETHV, un agente inteligente de validacion de talento Web3.\n\nTienes acceso a herramientas reales. Usa las herramientas cuando el usuario lo necesite.\n\nReglas:\n- Link que parece CV (Google Drive, PDF, DOCX) → llama analyze_cv.\n- Pide optimizar CV → llama optimize_cv.\n- Pide carta de presentacion → llama generate_cover_letter.\n- Quiere validar un skill → llama start_skill_quiz.\n- Si el usuario da una wallet address (0x...) y tiene un certificado pendiente → llama mint_certificate con los datos del certificado pendiente.\n- Responde siempre en español, breve y util.';
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -225,28 +323,20 @@ async function runAgent(userMessage, session) {
     rounds++;
     const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model: 'llama-3.3-70b-versatile',
-        messages,
-        tools: TOOLS,
-        tool_choice: 'auto',
-        max_tokens: 800
-      },
+      { model: 'llama-3.3-70b-versatile', messages, tools: TOOLS, tool_choice: 'auto', max_tokens: 800 },
       { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
     );
 
-    const choice = response.data.choices[0];
+    const choice       = response.data.choices[0];
     const assistantMsg = choice.message;
     messages.push(assistantMsg);
 
-    // Si el LLM no pide tools → respuesta final
     if (choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
       const finalText = assistantMsg.content || 'Listo!';
       session.history.push({ role: 'assistant', content: finalText });
       return finalText;
     }
 
-    // Ejecutar cada tool que pidió el LLM
     for (const toolCall of assistantMsg.tool_calls) {
       const toolName = toolCall.function.name;
       let args = {};
@@ -260,25 +350,24 @@ async function runAgent(userMessage, session) {
         toolResult = JSON.stringify({ error: e.message });
       }
 
-      messages.push({
-        role: 'tool',
-        tool_call_id: toolCall.id,
-        content: toolResult
-      });
+      messages.push({ role: 'tool', tool_call_id: toolCall.id, content: toolResult });
     }
-    // Siguiente iteración: el LLM ve los resultados y decide si necesita más tools o responde
   }
 
-  return 'Lo siento, no pude completar la acción. Intenta de nuevo.';
+  return 'No pude completar la acción. Intenta de nuevo.';
 }
 
-// ─── Procesamiento de mensajes ────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function extractText(payload) {
   try {
     const p = JSON.parse(payload.body);
     const i = JSON.parse(decodeURIComponent(p.m));
     return i.body || '';
   } catch(e) { return ''; }
+}
+
+function isWalletAddress(text) {
+  return /^0x[a-fA-F0-9]{40}$/.test(text.trim());
 }
 
 async function send(isChannel, roomId, chatId, msg) {
@@ -289,54 +378,98 @@ async function send(isChannel, roomId, chatId, msg) {
   }
 }
 
+// ─── Webhook ──────────────────────────────────────────────────────────────────
 app.post('/webhook', async function(req, res) {
   res.status(200).send('OK');
   try {
-    const payload = req.body;
+    const payload   = req.body;
     if (payload && payload.challenge) return;
 
-    const text = extractText(payload);
-    const isBot = payload && payload.isBot;
+    const text      = extractText(payload);
+    const isBot     = payload && payload.isBot;
     const isChannel = payload && payload.__typename === 'ChannelMessage';
-    const roomId = payload && payload.roomId;
-    const chatId = payload && payload.chatId;
+    const roomId    = payload && payload.roomId;
+    const chatId    = payload && payload.chatId;
 
-    console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| channel:', isChannel, '| room:', roomId);
-
+    console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| room:', roomId);
     if (!text || isBot) return;
 
     const session = getSession(roomId);
 
-    // Si hay un quiz activo, procesar respuesta
+    // ── 1. Quiz activo: colectar respuesta ────────────────────────────────────
     if (session.quizState && !text.startsWith('/')) {
       const quiz = session.quizState;
       quiz.answers.push(text.trim());
       quiz.current++;
 
       if (quiz.current < quiz.questions.length) {
-        const q = quiz.questions[quiz.current];
-        let msg = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
-        if (q.options) msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
+        // Siguiente pregunta
+        const q   = quiz.questions[quiz.current];
+        let msg   = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
+        if (q.options) msg += '\n\n' + q.options.map(function(o, i) { return (i + 1) + '. ' + o; }).join('\n');
         await send(isChannel, roomId, chatId, msg);
       } else {
-        // Quiz terminado — el agente evalúa las respuestas
-        const quizSummary = 'El usuario completó el quiz de ' + quiz.skill + '. Preguntas: ' + JSON.stringify(quiz.questions.map(function(q) { return q.question; })) + '. Respuestas del usuario: ' + JSON.stringify(quiz.answers) + '. Evalúa su nivel, qué sabe bien y qué debe mejorar.';
+        // Quiz terminado — evaluar
+        await send(isChannel, roomId, chatId, 'Evaluando tus respuestas...');
         session.quizState = null;
-        const evaluation = await runAgent(quizSummary, session);
-        await send(isChannel, roomId, chatId, 'Quiz completado!\n\n' + evaluation);
+
+        let result;
+        try {
+          result = await evaluateQuiz(quiz.skill, quiz.questions, quiz.answers);
+        } catch(e) {
+          await send(isChannel, roomId, chatId, 'Error al evaluar. Intenta de nuevo.');
+          return;
+        }
+
+        const passed = result.score >= PASS_SCORE;
+        let msg = 'Quiz de ' + quiz.skill + ' completado!\n\n' +
+          'Score: ' + result.score + '/100 — Nivel: ' + result.level + '\n\n' +
+          result.evaluation;
+
+        if (passed) {
+          // Guardar para emitir certificado
+          session.pendingCertificate = { skill: quiz.skill, score: result.score, level: result.level };
+          msg += '\n\n Aprobaste! Para emitir tu certificado en la blockchain (zkSYS Testnet), envía tu wallet address (0x...).';
+        } else {
+          msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Sigue practicando y vuelve a intentarlo con /skills ' + quiz.skill;
+        }
+
+        await send(isChannel, roomId, chatId, msg);
       }
       return;
     }
 
-    // Agente maneja el mensaje con tool calling
+    // ── 2. Certificado pendiente + wallet recibida ─────────────────────────────
+    if (session.pendingCertificate && isWalletAddress(text)) {
+      const cert = session.pendingCertificate;
+      session.pendingCertificate = null;
+
+      await send(isChannel, roomId, chatId, 'Emitiendo certificado en blockchain... puede tardar 15-30 segundos.');
+      try {
+        const result = await mintOnChain(text.trim(), cert.skill, cert.score, cert.level, session.cvData);
+        const msg = 'Certificado emitido en zkSYS Testnet!\n\n' +
+          'Skill: ' + cert.skill + '\n' +
+          'Score: ' + cert.score + '/100 — ' + cert.level + '\n' +
+          'Token ID: #' + result.tokenId + '\n' +
+          'Tx: ' + result.explorerTx + '\n\n' +
+          'Tu certificado es Soulbound (no transferible). Verifica tu wallet en el explorer.';
+        await send(isChannel, roomId, chatId, msg);
+      } catch(e) {
+        console.error('[ETHV] Mint error:', e.message);
+        await send(isChannel, roomId, chatId, 'Error al emitir certificado: ' + e.message + '\n\nAsegúrate de que el servidor tenga MINTER_PRIVATE_KEY configurado.');
+      }
+      return;
+    }
+
+    // ── 3. Agente general (tool calling) ──────────────────────────────────────
     const reply = await runAgent(text, session);
     await send(isChannel, roomId, chatId, reply);
 
     // Si el agente inició un quiz, enviar la primera pregunta
     if (session.quizState && session.quizState.current === 0) {
-      const q = session.quizState.questions[0];
-      let msg = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
-      if (q.options) msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
+      const q   = session.quizState.questions[0];
+      let msg   = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
+      if (q.options) msg += '\n\n' + q.options.map(function(o, i) { return (i + 1) + '. ' + o; }).join('\n');
       await send(isChannel, roomId, chatId, msg);
     }
 
@@ -346,7 +479,7 @@ app.post('/webhook', async function(req, res) {
 });
 
 app.get('/health', function(req, res) {
-  res.json({ status: 'ok', version: 'agent-v1', sessions: sessions.size });
+  res.json({ status: 'ok', version: 'agent-v2-cert', sessions: sessions.size, minter: !!MINTER_KEY });
 });
 
 // Keep-alive del backend en Render
