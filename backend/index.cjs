@@ -2047,16 +2047,11 @@ const EXPLORER_URL    = 'https://explorer-zk.tanenbaum.io';
 console.log('[SuperDapp] TOKEN:', SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
 console.log('[SuperDapp] GROQ:',  GROQ_API_KEY    ? 'OK' : 'FALTA');
 
-// @superdapp/agents es ESM — se carga con import() dinámico para compatibilidad con CJS
-let sdAgent = null;
-if (SUPERDAPP_TOKEN) {
-  import('@superdapp/agents').then(({ SuperDappAgent }) => {
-    sdAgent = new SuperDappAgent({ apiToken: SUPERDAPP_TOKEN, baseUrl: 'https://api.superdapp.ai' });
-    console.log('[SuperDapp] Agente inicializado');
-  }).catch(e => {
-    console.error('[SuperDapp] Error al cargar agente:', e.message);
-  });
-}
+const { SuperDappAgent } = require('@superdapp/agents');
+const sdAgent = SUPERDAPP_TOKEN
+  ? new SuperDappAgent({ apiToken: SUPERDAPP_TOKEN, baseUrl: 'https://api.superdapp.ai' })
+  : null;
+if (sdAgent) console.log('[SuperDapp] Agente inicializado');
 
 // ── Sesiones ──────────────────────────────────────────────────────────────────
 const sdSessions = new Map();
@@ -2361,7 +2356,8 @@ app.post('/webhook', async function(req, res) {
     const roomId    = payload && payload.roomId;
     const chatId    = payload && payload.chatId;
 
-    console.log('[SD] msg:', text ? text.substring(0, 80) : '', '| room:', roomId);
+    console.log('[SD] msg:', text ? text.substring(0, 80) : '', '| room:', roomId, '| chat:', chatId, '| isChannel:', isChannel);
+    console.log('[SD] payload raw:', JSON.stringify(payload).substring(0, 300));
     if (!text || isBot) return;
 
     const session = getSdSession(roomId);

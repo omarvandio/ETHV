@@ -5,7 +5,8 @@
   "main": "index.cjs",
   "scripts": {
     "start": "node index.cjs",
-    "dev": "node --watch index.cjs"
+    "dev": "node --watch index.cjs",
+    "postinstall": "node -e \"const fs=require('fs'),p='node_modules/@superdapp/agents/package.json',d=JSON.parse(fs.readFileSync(p,'utf8'));delete d.type;fs.writeFileSync(p,JSON.stringify(d,null,2));console.log('[@superdapp/agents] patched type:module');\""
   },
   "dependencies": {
     "@superdapp/agents": "^1.0.2",
