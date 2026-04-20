@@ -1,5 +1,5 @@
 // ============================================================
-// ETHV AI Provider Abstraction
+// LikeTalent AI Provider Abstraction
 // Swap LLM providers via env vars — no code changes needed
 //
 // Supported providers:

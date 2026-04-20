@@ -13,7 +13,7 @@ export function useWallet() {
 
     try {
       setIsAuthenticating(true);
-      const message = `Login to ETHV: ${new Date().toISOString()}`;
+      const message = `Login to LikeTalent: ${new Date().toISOString()}`;
       const signature = await signMessageAsync({ message, account: address });
 
       const response = await apiClient.post('/auth/wallet-login', {

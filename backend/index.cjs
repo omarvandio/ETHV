@@ -189,7 +189,7 @@ swaggerSpec.paths = {
     post: {
       tags: ['SuperDapp'],
       summary: 'SuperDapp Agent Webhook',
-      description: 'Recibe mensajes de SuperDapp y los procesa con el agente ETHV. El agente usa tool calling (Groq) para analizar CVs, generar quizzes, emitir certificados en blockchain y más. Requiere SUPERDAPP_TOKEN y GROQ_API_KEY en .env.',
+      description: 'Recibe mensajes de SuperDapp y los procesa con el agente LikeTalent. El agente usa tool calling (Groq) para analizar CVs, generar quizzes, emitir certificados en blockchain y más. Requiere SUPERDAPP_TOKEN y GROQ_API_KEY en .env.',
       requestBody: {
         required: true,
         content: {
@@ -2183,7 +2183,7 @@ async function sdMintOnChain(walletAddress, skill, score, level, cvData) {
   const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
 
   const metadata = {
-    name:        'ETHV Skill Certificate — ' + skill,
+    name:        'LikeTalent Skill Certificate — ' + skill,
     description: 'Certificado validado por IA. Skill: ' + skill + ' | Score: ' + score + '/100 | Nivel: ' + level,
     image:       'https://ethv-1.onrender.com/certificate-badge.png',
     attributes: [
@@ -2191,7 +2191,7 @@ async function sdMintOnChain(walletAddress, skill, score, level, cvData) {
       { trait_type: 'Score',    value: score },
       { trait_type: 'Level',    value: level },
       { trait_type: 'Issued',   value: new Date().toISOString().split('T')[0] },
-      { trait_type: 'Platform', value: 'ETHV' }
+      { trait_type: 'Platform', value: 'LikeTalent' }
     ]
   };
   const uri = 'data:application/json;base64,' + Buffer.from(JSON.stringify(metadata)).toString('base64');
@@ -2313,7 +2313,7 @@ async function sdRunAgent(userMessage, session) {
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
-  const systemPrompt = 'Eres ETHV, agente de validacion de talento Web3. Usa las herramientas disponibles cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\n- Wallet (0x...) con certificado pendiente → mint_certificate\nResponde siempre en español, breve y útil.';
+  const systemPrompt = 'Eres LikeTalent, agente de validacion de talento Web3. Usa las herramientas disponibles cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\n- Wallet (0x...) con certificado pendiente → mint_certificate\nResponde siempre en español, breve y útil.';
 
   const messages = [{ role: 'system', content: systemPrompt }, ...session.history];
 
@@ -2521,6 +2521,7 @@ app.get('/telegram/setup', async function(req, res) {
 
 // ── Discord Bot ───────────────────────────────────────────────────────────────
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN || '';
+const DISCORD_GENERAL_CHANNEL = process.env.DISCORD_GENERAL_CHANNEL || '1495864406662316096';
 
 if (DISCORD_TOKEN) {
   try {
@@ -2537,6 +2538,9 @@ if (DISCORD_TOKEN) {
 
     dcClient.once('ready', () => {
       console.log('[Discord] Bot conectado como', dcClient.user.tag);
+      // Enviar saludo al canal general al conectarse
+      const generalChannel = dcClient.channels.cache.get(DISCORD_GENERAL_CHANNEL);
+      if (generalChannel) generalChannel.send('Agente LikeTalent conectado y listo.');
     });
 
     dcClient.on('messageCreate', async (message) => {
@@ -2544,12 +2548,16 @@ if (DISCORD_TOKEN) {
       const text = message.content.trim();
       if (!text) return;
 
-      // Sesión por usuario+canal para DMs, por canal para servidores
-      const sessionKey = 'dc_' + (message.guildId ? message.channelId + '_' + message.author.id : message.author.id);
+      // Siempre responder en #general si el mensaje viene de ese servidor
+      const targetChannel = message.guildId
+        ? (dcClient.channels.cache.get(DISCORD_GENERAL_CHANNEL) || message.channel)
+        : message.channel;
+
+      const sessionKey = 'dc_' + (message.guildId ? DISCORD_GENERAL_CHANNEL + '_' + message.author.id : message.author.id);
       const sendFn = async (msg) => {
         // Discord limita a 2000 chars — dividir si es necesario
         for (let i = 0; i < msg.length; i += 1900) {
-          await message.channel.send(msg.slice(i, i + 1900));
+          await targetChannel.send(msg.slice(i, i + 1900));
         }
       };
 

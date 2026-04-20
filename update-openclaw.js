@@ -1,11 +1,11 @@
 const fs = require('fs');
 const content = 
-// ETHV OpenClaw Service
+// LikeTalent OpenClaw Service
 const EXTRACTOR_URL = import.meta?.env?.VITE_EXTRACTOR_URL || 'http://localhost:3010';
 
 const log = (level, message, data = null) => {
   const entry = { time: new Date().toISOString(), level, message, data };
-  console.log('[ETHV]', JSON.stringify(entry));
+  console.log('[LikeTalent]', JSON.stringify(entry));
   try {
     const logs = JSON.parse(localStorage.getItem('ethv_logs') || '[]');
     logs.push(entry);
@@ -68,7 +68,7 @@ async function sendToAgent(message) {
 async function analyzeCV(file) {
   log('INFO', 'analyzeCV called', { fileName: file.name });
   const cvText = await extractTextFromFile(file);
-  const prompt = 'You are ETHV, a Web3 talent validation agent. Analyze this CV/resume and extract JSON: {\" skills\\\: [], \\\experience_years\\\: 0, \\\education\\\: [], \\\certifications\\\: [], \\\summary\\\: \\\\\\, \\\web3_relevance\\\: \\\low\\\} CV: ' + cvText.slice(0, 5000);
+  const prompt = 'You are LikeTalent, a Web3 talent validation agent. Analyze this CV/resume and extract JSON: {\" skills\\\: [], \\\experience_years\\\: 0, \\\education\\\: [], \\\certifications\\\: [], \\\summary\\\: \\\\\\, \\\web3_relevance\\\: \\\low\\\} CV: ' + cvText.slice(0, 5000);
  const result = await sendToAgent(prompt);
  const content = result?.choices?.[0]?.message?.content || '';
  try { const match = content.match(/\\{[\\s\\S]*\\}/); if (match) return JSON.parse(match[0]); } catch {}
@@ -81,7 +81,7 @@ const clearLogs = () => localStorage.removeItem('ethv_logs');
 
 async function analyzeProfileContent(content) {
  try {
- const prompt = 'You are ETHV, a Web3 talent validation agent. Extract JSON from this LinkedIn profile: {\\\skills\\\: [], \\\experience_years\\\: 0, \\\education\\\: [], \\\certifications\\\: [], \\\summary\\\: \\\\\\, \\\web3_relevance\\\: \\\low\\\, \\\headline\\\: \\\\\\} Profile Content: ' + content.slice(0, 5000);
+ const prompt = 'You are LikeTalent, a Web3 talent validation agent. Extract JSON from this LinkedIn profile: {\\\skills\\\: [], \\\experience_years\\\: 0, \\\education\\\: [], \\\certifications\\\: [], \\\summary\\\: \\\\\\, \\\web3_relevance\\\: \\\low\\\, \\\headline\\\: \\\\\\} Profile Content: ' + content.slice(0, 5000);
  const response = await fetch('/v1/chat/completions', {
  method: 'POST',
  headers: { 'Authorization': 'Bearer bd1177ff2d28a2c4ceew1e08fee975fc9', 'Content-Type': 'application/json' },

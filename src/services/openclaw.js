@@ -1,7 +1,7 @@
-// ETHV OpenClaw Service
+// LikeTalent OpenClaw Service
 
 function log(level, message, data) {
-  console.log('[ETHV]', JSON.stringify({level, message, data}));
+  console.log('[LikeTalent]', JSON.stringify({level, message, data}));
 }
 
 log('INFO', 'Service loaded - Using OCR Backend');
@@ -355,7 +355,7 @@ async function analyzeLinkedInUrl(url) {
   let analysisData = {};
   
   if (scrapedContent) {
-    const prompt = 'You are ETHV, a Web3 talent validation agent. Extract JSON from this LinkedIn profile content with ALL fields: {name: "", headline: "", email: "", phone: "", location: "", linkedin: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"} Profile Content: ' + scrapedContent.slice(0, 6000);
+    const prompt = 'You are LikeTalent, a Web3 talent validation agent. Extract JSON from this LinkedIn profile content with ALL fields: {name: "", headline: "", email: "", phone: "", location: "", linkedin: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"} Profile Content: ' + scrapedContent.slice(0, 6000);
     const result = await sendToAgent(prompt);
     const acontent = result.choices ? result.choices[0].message.content : '';
     try {
@@ -363,7 +363,7 @@ async function analyzeLinkedInUrl(url) {
       if (match) analysisData = JSON.parse(match[0]);
     } catch (e) { log('ERROR', 'JSON parse failed', { error: e.message }); }
   } else {
-    const prompt = 'You are ETHV, a Web3 talent validation agent. A user wants to analyze their LinkedIn profile. URL: ' + url + '. Extract JSON with: {linkedin_url: "' + url + '", scrape_method: "ai-extraction", message: "Limited analysis from URL. For full analysis, use paste text mode.", skills: [], summary: "", web3_relevance: "low"}';
+    const prompt = 'You are LikeTalent, a Web3 talent validation agent. A user wants to analyze their LinkedIn profile. URL: ' + url + '. Extract JSON with: {linkedin_url: "' + url + '", scrape_method: "ai-extraction", message: "Limited analysis from URL. For full analysis, use paste text mode.", skills: [], summary: "", web3_relevance: "low"}';
     const result = await sendToAgent(prompt);
     const acontent = result.choices ? result.choices[0].message.content : '';
     try {
@@ -380,7 +380,7 @@ async function analyzeLinkedInUrl(url) {
 async function analyzeProfileContent(content) {
   log('INFO', 'analyzeProfileContent called', {length: content.length});
   
-  const prompt = 'You are ETHV, a Web3 talent validation agent. Extract JSON from this LinkedIn/profile content with ALL fields: {name: "", headline: "", email: "", phone: "", location: "", linkedin: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"} Profile Content: ' + content.slice(0, 6000);
+  const prompt = 'You are LikeTalent, a Web3 talent validation agent. Extract JSON from this LinkedIn/profile content with ALL fields: {name: "", headline: "", email: "", phone: "", location: "", linkedin: "", skills: [], experience_years: 0, current_position: "", company: "", education: [], certifications: [], languages: [], summary: "", web3_relevance: "low"} Profile Content: ' + content.slice(0, 6000);
 
   const result = await sendToAgent(prompt);
   const text = result.choices ? result.choices[0].message.content : '';
@@ -405,7 +405,7 @@ async function checkConnection() {
 }
 
 function clearLogs() {
-  console.log('[ETHV] Logs cleared');
+  console.log('[LikeTalent] Logs cleared');
 }
 
 function getLogs() {

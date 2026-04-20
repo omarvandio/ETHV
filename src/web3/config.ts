@@ -5,7 +5,7 @@ import { mainnet, sepolia } from 'wagmi/chains';
 export const projectId = (import.meta as any).env.VITE_WALLETCONNECT_PROJECT_ID || 'YOUR_PROJECT_ID';
 
 const metadata = {
-  name: 'ETHV Talent Validation',
+  name: 'LikeTalent Talent Validation',
   description: 'Web3 Talent Validation Agent',
   url: 'https://ethv.io', // origin must match your domain & subdomain
   icons: ['https://avatars.githubusercontent.com/u/37784886']

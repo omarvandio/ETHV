@@ -23,9 +23,9 @@ const CERT_ABI = [
   'function totalCertificates() external view returns (uint256)'
 ];
 
-console.log('[ETHV] TOKEN:',   API_TOKEN   ? 'OK' : 'FALTA');
-console.log('[ETHV] GROQ:',    GROQ_API_KEY ? 'OK' : 'FALTA');
-console.log('[ETHV] MINTER:',  MINTER_KEY   ? 'OK' : 'FALTA - no se podrán emitir certificados');
+console.log('[LikeTalent] TOKEN:',   API_TOKEN   ? 'OK' : 'FALTA');
+console.log('[LikeTalent] GROQ:',    GROQ_API_KEY ? 'OK' : 'FALTA');
+console.log('[LikeTalent] MINTER:',  MINTER_KEY   ? 'OK' : 'FALTA - no se podrán emitir certificados');
 
 const agent = new SuperDappAgent({ apiToken: API_TOKEN, baseUrl: 'https://api.superdapp.ai' });
 const app = express();
@@ -137,15 +137,15 @@ async function mintOnChain(walletAddress, skill, score, level, cvData) {
 
   // Metadata inline (base64) — sin necesidad de IPFS
   const metadata = {
-    name:        'ETHV Skill Certificate — ' + skill,
-    description: 'Certificado de skill validado por IA en ETHV. Skill: ' + skill + ' | Score: ' + score + '/100 | Nivel: ' + level,
+    name:        'LikeTalent Skill Certificate — ' + skill,
+    description: 'Certificado de skill validado por IA en LikeTalent. Skill: ' + skill + ' | Score: ' + score + '/100 | Nivel: ' + level,
     image:       'https://ethv-1.onrender.com/certificate-badge.png',
     attributes: [
       { trait_type: 'Skill',      value: skill },
       { trait_type: 'Score',      value: score },
       { trait_type: 'Level',      value: level },
       { trait_type: 'Issued',     value: new Date().toISOString().split('T')[0] },
-      { trait_type: 'Platform',   value: 'ETHV' },
+      { trait_type: 'Platform',   value: 'LikeTalent' },
       { trait_type: 'Network',    value: 'zkSYS Testnet' }
     ]
   };
@@ -311,7 +311,7 @@ async function runAgent(userMessage, session) {
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
-  const systemPrompt = 'Eres ETHV, un agente inteligente de validacion de talento Web3.\n\nTienes acceso a herramientas reales. Usa las herramientas cuando el usuario lo necesite.\n\nReglas:\n- Link que parece CV (Google Drive, PDF, DOCX) → llama analyze_cv.\n- Pide optimizar CV → llama optimize_cv.\n- Pide carta de presentacion → llama generate_cover_letter.\n- Quiere validar un skill → llama start_skill_quiz.\n- Si el usuario da una wallet address (0x...) y tiene un certificado pendiente → llama mint_certificate con los datos del certificado pendiente.\n- Responde siempre en español, breve y util.';
+  const systemPrompt = 'Eres LikeTalent, un agente inteligente de validacion de talento Web3.\n\nTienes acceso a herramientas reales. Usa las herramientas cuando el usuario lo necesite.\n\nReglas:\n- Link que parece CV (Google Drive, PDF, DOCX) → llama analyze_cv.\n- Pide optimizar CV → llama optimize_cv.\n- Pide carta de presentacion → llama generate_cover_letter.\n- Quiere validar un skill → llama start_skill_quiz.\n- Si el usuario da una wallet address (0x...) y tiene un certificado pendiente → llama mint_certificate con los datos del certificado pendiente.\n- Responde siempre en español, breve y util.';
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -391,7 +391,7 @@ app.post('/webhook', async function(req, res) {
     const roomId    = payload && payload.roomId;
     const chatId    = payload && payload.chatId;
 
-    console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| room:', roomId);
+    console.log('[LikeTalent] msg:', text ? text.substring(0, 80) : '', '| room:', roomId);
     if (!text || isBot) return;
 
     const session = getSession(roomId);
@@ -455,7 +455,7 @@ app.post('/webhook', async function(req, res) {
           'Tu certificado es Soulbound (no transferible). Verifica tu wallet en el explorer.';
         await send(isChannel, roomId, chatId, msg);
       } catch(e) {
-        console.error('[ETHV] Mint error:', e.message);
+        console.error('[LikeTalent] Mint error:', e.message);
         await send(isChannel, roomId, chatId, 'Error al emitir certificado: ' + e.message + '\n\nAsegúrate de que el servidor tenga MINTER_PRIVATE_KEY configurado.');
       }
       return;
@@ -474,7 +474,7 @@ app.post('/webhook', async function(req, res) {
     }
 
   } catch(e) {
-    console.error('[ETHV] Webhook error:', e.message);
+    console.error('[LikeTalent] Webhook error:', e.message);
   }
 });
 
@@ -487,4 +487,4 @@ setInterval(function() {
   axios.get(BACKEND_URL + '/health').catch(function() {});
 }, 14 * 60 * 1000);
 
-app.listen(PORT, function() { console.log('[ETHV] Agente listo en puerto', PORT); });
+app.listen(PORT, function() { console.log('[LikeTalent] Agente listo en puerto', PORT); });

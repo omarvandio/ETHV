@@ -1,5 +1,5 @@
 {
-  "name": "ETHV Talent Validation Agent",
+  "name": "LikeTalent Talent Validation Agent",
   "description": "A scalable Web3 frontend for talent validation, featuring wallet authentication, CV analysis, and skill validation.",
   "requestFramePermissions": []
 }
