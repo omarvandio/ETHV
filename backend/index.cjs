@@ -2365,13 +2365,77 @@ function sdIsWallet(text) {
   return /^0x[a-fA-F0-9]{40}$/.test(text.trim());
 }
 
-async function sdSend(isChannel, roomId, chatId, msg) {
-  if (!sdAgent) return;
-  if (isChannel) await sdAgent.sendChannelMessage(roomId, msg);
-  else await sdAgent.sendConnectionMessage(chatId || roomId, msg);
+// ═══════════════════════════════════════════════════════════════════════════
+// HANDLER GENÉRICO — mismo agente para SuperDapp, Discord y Telegram
+// sendFn: async (text) → envía el mensaje al canal correspondiente
+// ═══════════════════════════════════════════════════════════════════════════
+async function handleMessage(text, sessionKey, sendFn, platform) {
+  const session = getSdSession(sessionKey);
+  console.log('[' + platform + '] msg:', text.substring(0, 80), '| session:', sessionKey);
+
+  // 1. Quiz activo — colectar respuesta
+  if (session.quizState && !text.startsWith('/')) {
+    const quiz = session.quizState;
+    quiz.answers.push(text.trim());
+    quiz.current++;
+
+    if (quiz.current < quiz.questions.length) {
+      const q = quiz.questions[quiz.current];
+      let msg = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
+      if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
+      await sendFn(msg);
+    } else {
+      await sendFn('Evaluando tus respuestas...');
+      const savedQuiz = { ...quiz };
+      session.quizState = null;
+
+      let result;
+      try { result = await sdEvaluateQuiz(savedQuiz.skill, savedQuiz.questions, savedQuiz.answers); }
+      catch(e) { await sendFn('Error al evaluar. Intenta de nuevo.'); return; }
+
+      const passed = result.score >= PASS_SCORE;
+      let msg = 'Quiz de ' + savedQuiz.skill + ' completado!\n\nScore: ' + result.score + '/100 — Nivel: ' + result.level + '\n\n' + result.evaluation;
+      if (passed) {
+        session.pendingCertificate = { skill: savedQuiz.skill, score: result.score, level: result.level };
+        msg += '\n\n✅ Aprobaste! Envía tu wallet address (0x...) para emitir tu certificado en blockchain.';
+      } else {
+        msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Intenta de nuevo con /skills ' + savedQuiz.skill;
+      }
+      await sendFn(msg);
+    }
+    return;
+  }
+
+  // 2. Certificado pendiente + wallet recibida
+  if (session.pendingCertificate && sdIsWallet(text)) {
+    const cert = { ...session.pendingCertificate };
+    session.pendingCertificate = null;
+    await sendFn('Emitiendo certificado en blockchain... puede tardar 15-30 segundos.');
+    try {
+      const result = await sdMintOnChain(text.trim(), cert.skill, cert.score, cert.level, session.cvData);
+      await sendFn('Certificado emitido en zkSYS Testnet!\n\nSkill: ' + cert.skill + '\nScore: ' + cert.score + '/100 — ' + cert.level +
+        '\nToken ID: #' + result.tokenId + '\nTx: ' + result.explorerTx + '\n\nTu certificado es Soulbound (no transferible).');
+    } catch(e) {
+      console.error('[' + platform + '] Mint error:', e.message);
+      await sendFn('Error al emitir certificado. Intenta de nuevo más tarde.');
+    }
+    return;
+  }
+
+  // 3. Agente con tool calling
+  const reply = await sdRunAgent(text, session);
+  await sendFn(reply);
+
+  // Si el agente inició un quiz, enviar primera pregunta
+  if (session.quizState && session.quizState.current === 0) {
+    const q = session.quizState.questions[0];
+    let msg = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
+    if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
+    await sendFn(msg);
+  }
 }
 
-// ── Webhook route ─────────────────────────────────────────────────────────────
+// ── SuperDapp Webhook ─────────────────────────────────────────────────────────
 app.post('/webhook', async function(req, res) {
   res.status(200).send('OK');
   if (!sdAgent) return;
@@ -2385,80 +2449,124 @@ app.post('/webhook', async function(req, res) {
     const roomId    = payload && payload.roomId;
     const chatId    = payload && payload.chatId;
 
-    console.log('[SD] msg:', text ? text.substring(0, 80) : '', '| room:', roomId, '| chat:', chatId, '| isChannel:', isChannel);
     console.log('[SD] payload raw:', JSON.stringify(payload).substring(0, 300));
     if (!text || isBot) return;
 
-    const session = getSdSession(roomId);
+    const sendFn = async (msg) => {
+      if (isChannel) await sdAgent.sendChannelMessage(roomId, msg);
+      else await sdAgent.sendConnectionMessage(chatId || roomId, msg);
+    };
 
-    // 1. Quiz activo — colectar respuesta
-    if (session.quizState && !text.startsWith('/')) {
-      const quiz = session.quizState;
-      quiz.answers.push(text.trim());
-      quiz.current++;
-
-      if (quiz.current < quiz.questions.length) {
-        const q   = quiz.questions[quiz.current];
-        let msg   = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
-        if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
-        await sdSend(isChannel, roomId, chatId, msg);
-      } else {
-        await sdSend(isChannel, roomId, chatId, 'Evaluando tus respuestas...');
-        const savedQuiz = { ...quiz };
-        session.quizState = null;
-
-        let result;
-        try { result = await sdEvaluateQuiz(savedQuiz.skill, savedQuiz.questions, savedQuiz.answers); }
-        catch(e) { await sdSend(isChannel, roomId, chatId, 'Error al evaluar. Intenta de nuevo.'); return; }
-
-        const passed = result.score >= PASS_SCORE;
-        let msg = 'Quiz de ' + savedQuiz.skill + ' completado!\n\nScore: ' + result.score + '/100 — Nivel: ' + result.level + '\n\n' + result.evaluation;
-
-        if (passed) {
-          session.pendingCertificate = { skill: savedQuiz.skill, score: result.score, level: result.level };
-          msg += '\n\n✅ Aprobaste! Envía tu wallet address (0x...) para emitir tu certificado en blockchain.';
-        } else {
-          msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Practica y vuelve a intentarlo con /skills ' + savedQuiz.skill;
-        }
-        await sdSend(isChannel, roomId, chatId, msg);
-      }
-      return;
-    }
-
-    // 2. Certificado pendiente + wallet recibida
-    if (session.pendingCertificate && sdIsWallet(text)) {
-      const cert = { ...session.pendingCertificate };
-      session.pendingCertificate = null;
-      await sdSend(isChannel, roomId, chatId, 'Emitiendo certificado en blockchain... puede tardar 15-30 segundos.');
-      try {
-        const result = await sdMintOnChain(text.trim(), cert.skill, cert.score, cert.level, session.cvData);
-        await sdSend(isChannel, roomId, chatId,
-          'Certificado emitido en zkSYS Testnet!\n\nSkill: ' + cert.skill + '\nScore: ' + cert.score + '/100 — ' + cert.level +
-          '\nToken ID: #' + result.tokenId + '\nTx: ' + result.explorerTx +
-          '\n\nTu certificado es Soulbound (no transferible).');
-      } catch(e) {
-        console.error('[SD] Mint error:', e.message);
-        await sdSend(isChannel, roomId, chatId, 'Error al emitir certificado. Intenta de nuevo más tarde.');
-      }
-      return;
-    }
-
-    // 3. Agente general con tool calling
-    const reply = await sdRunAgent(text, session);
-    await sdSend(isChannel, roomId, chatId, reply);
-
-    // Si el agente inició un quiz, enviar primera pregunta
-    if (session.quizState && session.quizState.current === 0) {
-      const q   = session.quizState.questions[0];
-      let msg   = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
-      if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
-      await sdSend(isChannel, roomId, chatId, msg);
-    }
-
+    await handleMessage(text, 'sd_' + roomId, sendFn, 'SuperDapp');
   } catch(e) {
     console.error('[SD] Webhook error:', e.message);
   }
 });
+
+// ── Telegram Webhook ──────────────────────────────────────────────────────────
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+
+async function tgSend(chatId, text) {
+  // Telegram limita mensajes a 4096 chars — dividir si es necesario
+  const chunks = [];
+  for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
+  for (const chunk of chunks) {
+    await axios.post('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
+      chat_id: chatId, text: chunk, parse_mode: 'Markdown'
+    }).catch(() =>
+      axios.post('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage', {
+        chat_id: chatId, text: chunk
+      })
+    );
+  }
+}
+
+if (TELEGRAM_TOKEN) {
+  console.log('[Telegram] Bot configurado');
+} else {
+  console.log('[Telegram] TELEGRAM_BOT_TOKEN no configurado');
+}
+
+app.post('/telegram', async function(req, res) {
+  res.status(200).send('OK');
+  if (!TELEGRAM_TOKEN) return;
+  try {
+    const update  = req.body;
+    const message = update.message || update.channel_post;
+    if (!message || !message.text) return;
+
+    const chatId = message.chat.id;
+    const text   = message.text.trim();
+    const isBot  = message.from && message.from.is_bot;
+    if (isBot) return;
+
+    const sendFn = async (msg) => tgSend(chatId, msg);
+    await handleMessage(text, 'tg_' + chatId, sendFn, 'Telegram');
+  } catch(e) {
+    console.error('[Telegram] Error:', e.message);
+  }
+});
+
+// Endpoint para registrar el webhook de Telegram automáticamente
+app.get('/telegram/setup', async function(req, res) {
+  if (!TELEGRAM_TOKEN) return res.json({ error: 'TELEGRAM_BOT_TOKEN no configurado' });
+  const webhookUrl = (process.env.BACKEND_URL || 'https://ethv.onrender.com') + '/telegram';
+  try {
+    const r = await axios.post('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/setWebhook', { url: webhookUrl });
+    res.json({ ok: true, webhookUrl, result: r.data });
+  } catch(e) {
+    res.json({ error: e.message });
+  }
+});
+
+// ── Discord Bot ───────────────────────────────────────────────────────────────
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN || '';
+
+if (DISCORD_TOKEN) {
+  try {
+    const { Client, GatewayIntentBits, Partials } = require('discord.js');
+    const dcClient = new Client({
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.DirectMessages
+      ],
+      partials: [Partials.Channel, Partials.Message]
+    });
+
+    dcClient.once('ready', () => {
+      console.log('[Discord] Bot conectado como', dcClient.user.tag);
+    });
+
+    dcClient.on('messageCreate', async (message) => {
+      if (message.author.bot) return;
+      const text = message.content.trim();
+      if (!text) return;
+
+      // Sesión por usuario+canal para DMs, por canal para servidores
+      const sessionKey = 'dc_' + (message.guildId ? message.channelId + '_' + message.author.id : message.author.id);
+      const sendFn = async (msg) => {
+        // Discord limita a 2000 chars — dividir si es necesario
+        for (let i = 0; i < msg.length; i += 1900) {
+          await message.channel.send(msg.slice(i, i + 1900));
+        }
+      };
+
+      try {
+        await handleMessage(text, sessionKey, sendFn, 'Discord');
+      } catch(e) {
+        console.error('[Discord] Error:', e.message);
+      }
+    });
+
+    dcClient.login(DISCORD_TOKEN);
+  } catch(e) {
+    console.error('[Discord] Error al inicializar:', e.message);
+  }
+} else {
+  console.log('[Discord] DISCORD_TOKEN no configurado');
+}
 
 app.listen(PORT, () => {
   console.log('LikeTalent Backend running on http://localhost:' + PORT);

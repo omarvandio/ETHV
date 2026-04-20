@@ -11,6 +11,7 @@
   "dependencies": {
     "@superdapp/agents": "^1.0.2",
     "axios": "^1.7.9",
+    "discord.js": "^14.16.3",
     "canvas": "^3.2.1",
     "cors": "^2.8.6",
     "docx": "^9.5.0",
