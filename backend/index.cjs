@@ -2287,6 +2287,10 @@ async function sdExecuteTool(toolName, args, session) {
 }
 
 async function sdRunAgent(userMessage, session) {
+  if (!GROQ_API_KEY) {
+    return 'Hola! Soy ETHV, tu asistente de talento Web3.\n\nActualmente estoy en mantenimiento — el servicio de IA no está configurado.\n\nContacta al administrador para activar el agente.';
+  }
+
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
@@ -2297,10 +2301,18 @@ async function sdRunAgent(userMessage, session) {
   let rounds = 0;
   while (rounds < MAX_TOOL_ROUNDS) {
     rounds++;
-    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-      { model: 'llama-3.3-70b-versatile', messages, tools: SD_TOOLS, tool_choice: 'auto', max_tokens: 800 },
-      { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
-    );
+    let response;
+    try {
+      response = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+        { model: 'llama-3.3-70b-versatile', messages, tools: SD_TOOLS, tool_choice: 'auto', max_tokens: 800 },
+        { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+    } catch(e) {
+      const status = e.response?.status;
+      if (status === 401) return 'El agente no puede responder ahora mismo — clave de IA inválida. Contacta al administrador.';
+      if (status === 429) return 'Demasiadas solicitudes en este momento. Intenta de nuevo en unos segundos.';
+      return 'No tengo conexión con el servicio de IA en este momento. Intenta de nuevo en unos minutos.';
+    }
 
     const choice       = response.data.choices[0];
     const assistantMsg = choice.message;
