@@ -2004,6 +2004,403 @@ app.post('/api/mint-certificate', async (req, res) => {
   }
 });
 
+// ============================================
+// SUPERDAPP AGENT
+// ============================================
+const { SuperDappAgent } = require('@superdapp/agents');
+const axios = require('axios');
+
+const GROQ_API_KEY    = process.env.GROQ_API_KEY    || '';
+const SUPERDAPP_TOKEN = process.env.SUPERDAPP_TOKEN  || '';
+const MINTER_KEY      = process.env.ZKSYS_PRIVATE_KEY || process.env.PRIVATE_KEY || '';
+const PASS_SCORE      = 70;
+const MAX_TOOL_ROUNDS = 5;
+const EXPLORER_URL    = 'https://explorer-zk.tanenbaum.io';
+
+console.log('[SuperDapp] TOKEN:', SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
+console.log('[SuperDapp] GROQ:',  GROQ_API_KEY    ? 'OK' : 'FALTA');
+
+const sdAgent = SUPERDAPP_TOKEN
+  ? new SuperDappAgent({ apiToken: SUPERDAPP_TOKEN, baseUrl: 'https://api.superdapp.ai' })
+  : null;
+
+// ── Sesiones ──────────────────────────────────────────────────────────────────
+const sdSessions = new Map();
+
+function getSdSession(roomId) {
+  if (!sdSessions.has(roomId)) {
+    sdSessions.set(roomId, { cvData: null, history: [], quizState: null, pendingCertificate: null, lastActivity: Date.now() });
+  }
+  const s = sdSessions.get(roomId);
+  s.lastActivity = Date.now();
+  return s;
+}
+
+// Limpiar sesiones inactivas hace más de 24h
+setInterval(() => {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [id, s] of sdSessions) if (s.lastActivity < cutoff) sdSessions.delete(id);
+}, 60 * 60 * 1000);
+
+// ── Tools del agente ──────────────────────────────────────────────────────────
+const SD_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_cv',
+      description: 'Descarga y analiza un CV desde una URL (Google Drive, Dropbox, PDF/DOCX). Devuelve nombre, skills, score, roles sugeridos, fortalezas y mejoras.',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'URL del CV (PDF o DOCX)' } },
+        required: ['url']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'optimize_cv',
+      description: 'Genera un CV optimizado para ATS basado en el CV previamente analizado.',
+      parameters: {
+        type: 'object',
+        properties: { lang: { type: 'string', enum: ['es', 'en'] } }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_cover_letter',
+      description: 'Genera una carta de presentación profesional basada en el CV del usuario.',
+      parameters: {
+        type: 'object',
+        properties: {
+          job_title: { type: 'string' },
+          company:   { type: 'string' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'start_skill_quiz',
+      description: 'Inicia un quiz de validación de un skill técnico específico.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Skill a evaluar (ej: SolidWorks, Solidity, React)' },
+          level: { type: 'string', enum: ['junior', 'mid', 'senior'] }
+        },
+        required: ['skill']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mint_certificate',
+      description: 'Emite certificado soulbound en blockchain (zkSYS). Solo cuando el usuario aprobó el quiz (score >= 70) y dio su wallet address.',
+      parameters: {
+        type: 'object',
+        properties: {
+          wallet_address: { type: 'string' },
+          skill:          { type: 'string' },
+          score:          { type: 'number' },
+          level:          { type: 'string' }
+        },
+        required: ['wallet_address', 'skill', 'score', 'level']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_user_profile',
+      description: 'Obtiene el CV del usuario si fue analizado previamente.',
+      parameters: { type: 'object', properties: {} }
+    }
+  }
+];
+
+// ── Helpers internos ──────────────────────────────────────────────────────────
+function sdConvertDriveLink(url) {
+  const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (match) return 'https://drive.google.com/uc?export=download&confirm=t&id=' + match[1];
+  return url;
+}
+
+async function sdDownloadFile(url) {
+  const directUrl = sdConvertDriveLink(url);
+  const response  = await axios.get(directUrl, {
+    responseType: 'arraybuffer', timeout: 20000, maxRedirects: 5,
+    maxContentLength: 50 * 1024 * 1024,
+    headers: { 'User-Agent': 'Mozilla/5.0' }
+  });
+  const buffer   = Buffer.from(response.data);
+  const filename = url.includes('drive.google') ? 'cv.pdf' : (url.split('/').pop().split('?')[0] || 'cv.pdf');
+  return { file: buffer.toString('base64'), filename };
+}
+
+async function sdCallBackend(endpoint, body) {
+  const response = await axios.post('http://localhost:' + PORT + endpoint, body, { timeout: 90000 });
+  return response.data;
+}
+
+async function sdMintOnChain(walletAddress, skill, score, level, cvData) {
+  if (!MINTER_KEY) throw new Error('MINTER_PRIVATE_KEY no configurado');
+  const provider = new Provider(ZKSYS_RPC);
+  const signer   = new Wallet(MINTER_KEY, provider);
+  const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+
+  const metadata = {
+    name:        'ETHV Skill Certificate — ' + skill,
+    description: 'Certificado validado por IA. Skill: ' + skill + ' | Score: ' + score + '/100 | Nivel: ' + level,
+    image:       'https://ethv-1.onrender.com/certificate-badge.png',
+    attributes: [
+      { trait_type: 'Skill',    value: skill },
+      { trait_type: 'Score',    value: score },
+      { trait_type: 'Level',    value: level },
+      { trait_type: 'Issued',   value: new Date().toISOString().split('T')[0] },
+      { trait_type: 'Platform', value: 'ETHV' }
+    ]
+  };
+  const uri = 'data:application/json;base64,' + Buffer.from(JSON.stringify(metadata)).toString('base64');
+
+  let cvHash = ethers.ZeroHash;
+  if (cvData && cvData.name) {
+    cvHash = ethers.keccak256(ethers.toUtf8Bytes(cvData.name + (cvData.skills || []).join(',')));
+  }
+
+  const tx      = await contract.mintCertificate(walletAddress, skill, score, level, uri, cvHash);
+  const receipt = await tx.wait();
+
+  let tokenId = null;
+  for (const log of (receipt.logs || [])) {
+    try {
+      const parsed = contract.interface.parseLog(log);
+      if (parsed && parsed.name === 'CertificateMinted') { tokenId = parsed.args.tokenId.toString(); break; }
+    } catch(e) {}
+  }
+  return { txHash: tx.hash, tokenId, explorerTx: EXPLORER_URL + '/tx/' + tx.hash };
+}
+
+async function sdEvaluateQuiz(skill, questions, answers) {
+  const prompt = 'Eres un evaluador técnico. El usuario respondió un quiz de "' + skill + '".\n\n' +
+    questions.map((q, i) => (i + 1) + '. ' + q.question + '\n   Respuesta: ' + (answers[i] || '(sin respuesta)')).join('\n') +
+    '\n\nDevuelve EXACTAMENTE este JSON (sin markdown):\n{"score":85,"level":"Mid","passed":true,"evaluation":"Evaluación breve en español."}';
+
+  const r    = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+    { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 300, temperature: 0.2 },
+    { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
+  );
+  const text  = r.data.choices[0].message.content.trim();
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Respuesta del evaluador inválida');
+  return JSON.parse(match[0]);
+}
+
+async function sdExecuteTool(toolName, args, session) {
+  console.log('[SD-TOOL]', toolName);
+
+  if (toolName === 'analyze_cv') {
+    const dl     = await sdDownloadFile(args.url);
+    const result = await sdCallBackend('/api/analyze-cv', { file: dl.file, filename: dl.filename });
+    session.cvData = result;
+    return JSON.stringify({ name: result.name, location: result.location, current_position: result.current_position,
+      skills: result.skills, experience_years: result.experience_years, score: result.overall_score,
+      level: result.level, suggested_roles: result.suggested_roles, strengths: result.strengths,
+      improvements: result.improvements, web3_relevance: result.web3_relevance });
+  }
+
+  if (toolName === 'optimize_cv') {
+    if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
+    const result = await sdCallBackend('/api/improve-cv', { cvData: session.cvData, lang: args.lang || 'es' });
+    return JSON.stringify({ ats_score: result.ats_score, professional_summary: result.professional_summary || result.summary });
+  }
+
+  if (toolName === 'generate_cover_letter') {
+    if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
+    const cv     = session.cvData;
+    const target = (args.job_title ? ' para el puesto de ' + args.job_title : '') + (args.company ? ' en ' + args.company : '');
+    const prompt = 'Genera una carta de presentacion profesional en espanol' + target + ' para ' + (cv.name || 'el candidato') +
+      ', ' + (cv.current_position || 'profesional') + ' con skills en ' + (cv.skills || []).slice(0, 5).join(', ') +
+      '. Formal, 3 párrafos, lista para enviar. Solo devuelve la carta.';
+    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
+      { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
+    );
+    return JSON.stringify({ cover_letter: r.data.choices[0].message.content });
+  }
+
+  if (toolName === 'start_skill_quiz') {
+    const result    = await sdCallBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
+    const questions = result.questions || [];
+    if (!questions.length) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
+    session.quizState = { skill: args.skill, questions, current: 0, answers: [] };
+    const q = questions[0];
+    return JSON.stringify({ quiz_started: true, skill: args.skill, total_questions: questions.length,
+      first_question: q.question, options: q.options || null });
+  }
+
+  if (toolName === 'mint_certificate') {
+    if (!ethers.isAddress(args.wallet_address)) return JSON.stringify({ error: 'Wallet address inválida.' });
+    const result = await sdMintOnChain(args.wallet_address, args.skill, args.score, args.level, session.cvData);
+    return JSON.stringify(result);
+  }
+
+  if (toolName === 'get_user_profile') {
+    if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado aún.' });
+    return JSON.stringify(session.cvData);
+  }
+
+  return JSON.stringify({ error: 'Tool desconocida: ' + toolName });
+}
+
+async function sdRunAgent(userMessage, session) {
+  session.history.push({ role: 'user', content: userMessage });
+  if (session.history.length > 20) session.history = session.history.slice(-20);
+
+  const systemPrompt = 'Eres ETHV, agente de validacion de talento Web3. Usa las herramientas disponibles cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\n- Wallet (0x...) con certificado pendiente → mint_certificate\nResponde siempre en español, breve y útil.';
+
+  const messages = [{ role: 'system', content: systemPrompt }, ...session.history];
+
+  let rounds = 0;
+  while (rounds < MAX_TOOL_ROUNDS) {
+    rounds++;
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+      { model: 'llama-3.3-70b-versatile', messages, tools: SD_TOOLS, tool_choice: 'auto', max_tokens: 800 },
+      { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
+    );
+
+    const choice       = response.data.choices[0];
+    const assistantMsg = choice.message;
+    messages.push(assistantMsg);
+
+    if (choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
+      const finalText = assistantMsg.content || 'Listo!';
+      session.history.push({ role: 'assistant', content: finalText });
+      return finalText;
+    }
+
+    for (const toolCall of assistantMsg.tool_calls) {
+      let args = {};
+      try { args = JSON.parse(toolCall.function.arguments); } catch(e) {}
+      let toolResult;
+      try { toolResult = await sdExecuteTool(toolCall.function.name, args, session); }
+      catch(e) { console.error('[SD-TOOL ERROR]', toolCall.function.name, e.message); toolResult = JSON.stringify({ error: e.message }); }
+      messages.push({ role: 'tool', tool_call_id: toolCall.id, content: toolResult });
+    }
+  }
+  return 'No pude completar la acción. Intenta de nuevo.';
+}
+
+function sdExtractText(payload) {
+  try {
+    const p = JSON.parse(payload.body);
+    const i = JSON.parse(decodeURIComponent(p.m));
+    return typeof i.body === 'string' ? i.body.trim() : '';
+  } catch(e) { return ''; }
+}
+
+function sdIsWallet(text) {
+  return /^0x[a-fA-F0-9]{40}$/.test(text.trim());
+}
+
+async function sdSend(isChannel, roomId, chatId, msg) {
+  if (!sdAgent) return;
+  if (isChannel) await sdAgent.sendChannelMessage(roomId, msg);
+  else await sdAgent.sendConnectionMessage(chatId || roomId, msg);
+}
+
+// ── Webhook route ─────────────────────────────────────────────────────────────
+app.post('/webhook', async function(req, res) {
+  res.status(200).send('OK');
+  if (!sdAgent) return;
+  try {
+    const payload   = req.body;
+    if (payload && payload.challenge) return;
+
+    const text      = sdExtractText(payload);
+    const isBot     = payload && payload.isBot;
+    const isChannel = payload && payload.__typename === 'ChannelMessage';
+    const roomId    = payload && payload.roomId;
+    const chatId    = payload && payload.chatId;
+
+    console.log('[SD] msg:', text ? text.substring(0, 80) : '', '| room:', roomId);
+    if (!text || isBot) return;
+
+    const session = getSdSession(roomId);
+
+    // 1. Quiz activo — colectar respuesta
+    if (session.quizState && !text.startsWith('/')) {
+      const quiz = session.quizState;
+      quiz.answers.push(text.trim());
+      quiz.current++;
+
+      if (quiz.current < quiz.questions.length) {
+        const q   = quiz.questions[quiz.current];
+        let msg   = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
+        if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
+        await sdSend(isChannel, roomId, chatId, msg);
+      } else {
+        await sdSend(isChannel, roomId, chatId, 'Evaluando tus respuestas...');
+        const savedQuiz = { ...quiz };
+        session.quizState = null;
+
+        let result;
+        try { result = await sdEvaluateQuiz(savedQuiz.skill, savedQuiz.questions, savedQuiz.answers); }
+        catch(e) { await sdSend(isChannel, roomId, chatId, 'Error al evaluar. Intenta de nuevo.'); return; }
+
+        const passed = result.score >= PASS_SCORE;
+        let msg = 'Quiz de ' + savedQuiz.skill + ' completado!\n\nScore: ' + result.score + '/100 — Nivel: ' + result.level + '\n\n' + result.evaluation;
+
+        if (passed) {
+          session.pendingCertificate = { skill: savedQuiz.skill, score: result.score, level: result.level };
+          msg += '\n\n✅ Aprobaste! Envía tu wallet address (0x...) para emitir tu certificado en blockchain.';
+        } else {
+          msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Practica y vuelve a intentarlo con /skills ' + savedQuiz.skill;
+        }
+        await sdSend(isChannel, roomId, chatId, msg);
+      }
+      return;
+    }
+
+    // 2. Certificado pendiente + wallet recibida
+    if (session.pendingCertificate && sdIsWallet(text)) {
+      const cert = { ...session.pendingCertificate };
+      session.pendingCertificate = null;
+      await sdSend(isChannel, roomId, chatId, 'Emitiendo certificado en blockchain... puede tardar 15-30 segundos.');
+      try {
+        const result = await sdMintOnChain(text.trim(), cert.skill, cert.score, cert.level, session.cvData);
+        await sdSend(isChannel, roomId, chatId,
+          'Certificado emitido en zkSYS Testnet!\n\nSkill: ' + cert.skill + '\nScore: ' + cert.score + '/100 — ' + cert.level +
+          '\nToken ID: #' + result.tokenId + '\nTx: ' + result.explorerTx +
+          '\n\nTu certificado es Soulbound (no transferible).');
+      } catch(e) {
+        console.error('[SD] Mint error:', e.message);
+        await sdSend(isChannel, roomId, chatId, 'Error al emitir certificado. Intenta de nuevo más tarde.');
+      }
+      return;
+    }
+
+    // 3. Agente general con tool calling
+    const reply = await sdRunAgent(text, session);
+    await sdSend(isChannel, roomId, chatId, reply);
+
+    // Si el agente inició un quiz, enviar primera pregunta
+    if (session.quizState && session.quizState.current === 0) {
+      const q   = session.quizState.questions[0];
+      let msg   = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
+      if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
+      await sdSend(isChannel, roomId, chatId, msg);
+    }
+
+  } catch(e) {
+    console.error('[SD] Webhook error:', e.message);
+  }
+});
+
 app.listen(PORT, () => {
   console.log('LikeTalent Backend running on http://localhost:' + PORT);
   console.log('Supabase URL:', SUPABASE_URL || 'NO configurado');
