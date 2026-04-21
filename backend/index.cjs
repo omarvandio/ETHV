@@ -1,5 +1,9 @@
 // LikeTalent Backend Server
 require('dotenv').config();
+
+// Evitar que errores no capturados maten el proceso
+process.on('uncaughtException',  (e) => console.error('[UNCAUGHT EXCEPTION]', e.message, e.stack));
+process.on('unhandledRejection', (e) => console.error('[UNHANDLED REJECTION]', e?.message || e));
 const express = require('express');
 const https = require('https');
 const http = require('http');
@@ -665,48 +669,30 @@ async function extractTextFromFile(fileBuffer, filename) {
     }
   }
 
-  // PDF: extraer texto con pdfjs-dist
+  // PDF: extraer texto con pdf-parse (CJS nativo, sin worker threads)
   if (ext === 'pdf') {
     try {
-      const path = require('path');
-      const { pathToFileURL } = require('url');
-      const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      const workerSrc = pathToFileURL(path.resolve(__dirname, 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.mjs')).href;
-      GlobalWorkerOptions.workerSrc = workerSrc;
-
-      const data = new Uint8Array(fileBuffer);
-      const pdf = await getDocument({ data, useSystemFonts: true, disableFontFace: true }).promise;
-      let text = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
-        text += tc.items.map(item => item.str).join(' ') + '\n';
-      }
+      const { PDFParse, VerbosityLevel } = require('pdf-parse');
+      const parser = new PDFParse({ data: fileBuffer, verbosity: VerbosityLevel ? VerbosityLevel.ERRORS : 0 });
+      await parser.load();
+      const result = await parser.getText();
+      const text = result.text || '';
       if (text.trim().length > 20) {
-        console.log('[OCR] pdfjs-dist extrajo', text.length, 'chars,', pdf.numPages, 'páginas');
+        console.log('[OCR] pdf-parse extrajo', text.length, 'chars,', result.total, 'páginas');
         return text;
       }
     } catch (e) {
-      console.log('[OCR] pdfjs-dist falló:', e.message);
+      console.log('[OCR] pdf-parse falló:', e.message);
     }
 
     console.log('[OCR] No se pudo extraer texto del PDF');
     return '';
   }
 
-  // Fallback: Tesseract OCR (solo para imágenes, NO para PDFs)
-  try {
-    const { createWorker } = require('tesseract.js');
-    console.log('[OCR] Iniciando Tesseract...');
-    const worker = await createWorker('spa+eng');
-    const { data: { text } } = await worker.recognize(fileBuffer);
-    await worker.terminate();
-    console.log('[OCR] Tesseract extrajo', text.length, 'chars');
-    return text;
-  } catch (e) {
-    console.log('[OCR] Tesseract falló:', e.message);
-    return '';
-  }
+  // Para PDF/DOCX sin texto extraíble — no usar Tesseract (descarga archivos y reinicia --watch)
+  // Solo retornar vacío; el análisis continuará con lo que tenga
+  console.log('[OCR] Formato no soportado para OCR:', ext);
+  return '';
 }
 
 // ============================================
@@ -964,9 +950,9 @@ setInterval(() => {
   for (const [id, s] of quizSessions) if (s.expiresAt < now) quizSessions.delete(id);
 }, 10 * 60 * 1000);
 
-const QUIZ_TOTAL =2;
-// TODO: re-enable 'open' when ready → ['multiple_choice', 'open', 'multiple_choice', 'code_trace', 'open']
-const QUIZ_TYPES = ['multiple_choice', 'code_trace', 'multiple_choice', 'multiple_choice', 'code_trace'];
+const QUIZ_TOTAL = 2;
+const QUIZ_TYPES_WEB = ['multiple_choice', 'code_trace', 'multiple_choice', 'multiple_choice', 'code_trace'];
+const QUIZ_TYPES_BOT = ['multiple_choice', 'multiple_choice', 'multiple_choice', 'multiple_choice', 'multiple_choice'];
 
 const QUIZ_SYSTEM = `You are LikeTalent, a technical quiz generator. Each response must be ONLY a valid JSON object — no markdown, no prose, no extra text outside the JSON. Never repeat a question theme already used in this session.`;
 
@@ -976,26 +962,38 @@ function sanitizeQuestion(q) {
 
 async function generateOneQuestion(session, n, attempt = 1) {
   const { skill, level, lang, total } = session;
-  const type = QUIZ_TYPES[(n - 1) % QUIZ_TYPES.length];
+  const quizTypes = session.mode === 'bot' ? QUIZ_TYPES_BOT : QUIZ_TYPES_WEB;
+  const type = quizTypes[(n - 1) % quizTypes.length];
   const langNote = lang === 'es' ? 'Escribe TODO en español.' : 'Write everything in English.';
 
   const usedTypes = session.questions.map(q => q.type).join(', ') || 'none';
 
+  const difficultyNote = level === 'junior'
+    ? 'VERY EASY — basic definitions, beginner concepts only. Someone with 1 month of study should answer correctly.'
+    : level === 'mid'
+    ? 'MEDIUM — practical knowledge, real-world scenarios.'
+    : 'HARD — advanced, edge cases, deep understanding required.';
+
+  const botRules = session.mode === 'bot'
+    ? '- ONLY text-based questions — NO code snippets, NO "according to this code" references\n- Conceptual, definition-based, or plain scenario questions only'
+    : '- For code_trace: include a real code snippet in the "code" field\n- For multiple_choice: conceptual or scenario-based';
+
   const userContent = n === 1
-    ? `Generate question ${n} of ${total} to validate REAL proficiency in "${skill}" at ${level} level. ${langNote}
+    ? `Generate question ${n} of ${total} to validate proficiency in "${skill}" at ${level} level. ${langNote}
 
+Difficulty: ${difficultyNote}
 Use type: ${type}. Rules:
-- No questions answerable by googling a definition
-- Real-world scenario-based questions only
-- For code_trace: use non-trivial edge cases
-- For open: require reasoning, not fact recitation
+${botRules}
+- For junior: extremely simple, basic definitions only
+- 4 options (A, B, C, D), exactly one correct
 
-Return ONLY a JSON object (include only fields relevant to the type):
+Return ONLY this JSON:
 {"type":"multiple_choice","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}
 {"type":"code_trace","question":"...","code":"// snippet","options":["A","B","C","D"],"correct":0,"explanation":"..."}`
     : `Generate question ${n} of ${total} for "${skill}" at ${level} level. ${langNote}
-Use type: ${type}. Types used so far: ${usedTypes}. Avoid repeating themes.
-Return ONLY a valid JSON object.`;
+Difficulty: ${difficultyNote}
+Use type: ${type}. ${session.mode === 'bot' ? 'Text-only, no code snippets.' : ''} Types used so far: ${usedTypes}. Avoid repeating themes.
+Return ONLY a valid JSON object with fields: type, question, options (array of 4), correct (index 0-3), explanation.`;
 
   // Keep only last 2 messages (1 Q&A) to avoid context overflow on long sessions
   const recentMessages = session.messages.slice(-2);
@@ -1026,13 +1024,13 @@ Return ONLY a valid JSON object.`;
 
 app.post('/api/generate-quiz', async (req, res) => {
   try {
-    const { skill, level = 'mid', lang = 'en' } = req.body;
+    const { skill, level = 'mid', lang = 'en', mode = 'web' } = req.body;
     if (!skill) return res.status(400).json({ error: 'skill required' });
 
     const t0 = Date.now();
     const quizId = require('crypto').randomUUID();
     const session = {
-      skill, level, lang, total: QUIZ_TOTAL,
+      skill, level, lang, mode, total: QUIZ_TOTAL,
       messages: [], questions: [],
       pending: null, nextIndex: 2,
       expiresAt: Date.now() + 30 * 60 * 1000
@@ -1152,7 +1150,10 @@ app.post('/api/submit-quiz', async (req, res) => {
       }
 
       // multiple_choice or code_trace
-      const isCorrect = userAnswer === q.correct;
+      // Usuario puede responder con número 1-based ("1","2") o índice 0-based (0,1)
+      const answerNum = parseInt(userAnswer);
+      const answerIdx = !isNaN(answerNum) && answerNum >= 1 ? answerNum - 1 : answerNum;
+      const isCorrect = answerIdx === q.correct || userAnswer === q.options?.[q.correct];
       return {
         type: q.type || 'multiple_choice',
         question: q.question,
@@ -1819,8 +1820,82 @@ const CONTRACT_ABI     = [
 ];
 
 // Build a PDF certificate and return its Buffer
+function formatCertificateTitle(skill) {
+  // Mapeo de skills comunes a nombres profesionales
+  const titleMap = {
+    'gcp': 'Google Cloud Platform',
+    'aws': 'Amazon Web Services',
+    'azure': 'Microsoft Azure',
+    'react': 'React.js Development',
+    'node': 'Node.js Development',
+    'node.js': 'Node.js Development',
+    'nodejs': 'Node.js Development',
+    'solidity': 'Solidity Smart Contracts',
+    'python': 'Python Programming',
+    'java': 'Java Development',
+    'javascript': 'JavaScript Development',
+    'typescript': 'TypeScript Development',
+    'docker': 'Docker & Containerization',
+    'kubernetes': 'Kubernetes Orchestration',
+    'k8s': 'Kubernetes Orchestration',
+    'sql': 'SQL & Database Management',
+    'mongodb': 'MongoDB & NoSQL',
+    'git': 'Git Version Control',
+    'linux': 'Linux System Administration',
+    'figma': 'Figma UI/UX Design',
+    'jira': 'Jira Project Management',
+    'scrum': 'Scrum Methodology',
+    'agile': 'Agile Methodology',
+    'rust': 'Rust Programming',
+    'go': 'Go Programming',
+    'golang': 'Go Programming',
+    'c#': 'C# Development',
+    'c++': 'C++ Development',
+    'swift': 'Swift Development',
+    'kotlin': 'Kotlin Development',
+    'flutter': 'Flutter Development',
+    'angular': 'Angular Development',
+    'vue': 'Vue.js Development',
+    'vue.js': 'Vue.js Development',
+    'next': 'Next.js Development',
+    'next.js': 'Next.js Development',
+    'graphql': 'GraphQL API Design',
+    'terraform': 'Terraform Infrastructure',
+    'ci/cd': 'CI/CD Pipeline Engineering',
+    'devops': 'DevOps Engineering',
+    'web3': 'Web3 Development',
+    'blockchain': 'Blockchain Technology',
+    'defi': 'DeFi Protocol Development',
+    'solidworks': 'SolidWorks Engineering',
+    'autocad': 'AutoCAD Design',
+    'excel': 'Microsoft Excel Advanced',
+    'power bi': 'Power BI Analytics',
+    'tableau': 'Tableau Data Visualization',
+    'machine learning': 'Machine Learning Engineering',
+    'ml': 'Machine Learning Engineering',
+    'ai': 'Artificial Intelligence',
+    'data science': 'Data Science & Analytics',
+    'cybersecurity': 'Cybersecurity',
+    'php': 'PHP Development',
+    'ruby': 'Ruby Development',
+    'rails': 'Ruby on Rails Development',
+    'django': 'Django Development',
+    'spring': 'Spring Framework',
+    'html': 'HTML & Web Standards',
+    'css': 'CSS & Styling',
+  };
+  const key = skill.toLowerCase().trim();
+  if (titleMap[key]) return titleMap[key];
+  // Si no está en el mapa, capitalizar profesionalmente
+  return skill.trim().split(/\s+/).map(w => {
+    if (['de', 'en', 'y', 'the', 'and', 'of', 'in', 'for'].includes(w.toLowerCase())) return w.toLowerCase();
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+}
+
 async function buildCertificatePDF({ skill, score, level, wallet, issuedAt, contentHash, explorerUrl }) {
   const QRCode = require('qrcode');
+  const certTitle = formatCertificateTitle(skill);
 
   const verifyUrl = explorerUrl || `https://explorer-zk.tanenbaum.io/address/${CONTRACT_ADDRESS}`;
 
@@ -1893,9 +1968,10 @@ async function buildCertificatePDF({ skill, score, level, wallet, issuedAt, cont
     doc.fillColor('#a1a1aa').fontSize(12).font('Helvetica')
        .text('has successfully validated the skill', 60, midY + 60, { width: textW });
 
-    // ── Skill name ────────────────────────────────────────────────────────────
-    doc.fillColor('#10b981').fontSize(48).font('Helvetica-Bold')
-       .text(skill, 0, midY + 86, { align: 'center' });
+    // ── Skill name (título profesional) ─────────────────────────────────────
+    const titleSize = certTitle.length > 25 ? 36 : certTitle.length > 18 ? 42 : 48;
+    doc.fillColor('#10b981').fontSize(titleSize).font('Helvetica-Bold')
+       .text(certTitle, 0, midY + 86, { align: 'center' });
 
     // ── Score + Level boxes ───────────────────────────────────────────────────
     const boxY  = midY + 152;
@@ -2044,8 +2120,10 @@ const PASS_SCORE      = 70;
 const MAX_TOOL_ROUNDS = 5;
 const EXPLORER_URL    = 'https://explorer-zk.tanenbaum.io';
 
-console.log('[SuperDapp] TOKEN:', SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
-console.log('[SuperDapp] GROQ:',  GROQ_API_KEY    ? 'OK' : 'FALTA');
+console.log('[SuperDapp] TOKEN:',   SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
+console.log('[SuperDapp] GROQ:',    GROQ_API_KEY    ? 'OK — tool calling activo' : 'FALTA — usando MiniMax como fallback');
+console.log('[SuperDapp] DISCORD:', process.env.DISCORD_TOKEN ? 'OK' : 'FALTA');
+console.log('[SuperDapp] TELEGRAM:', process.env.TELEGRAM_BOT_TOKEN ? 'OK' : 'FALTA');
 
 const { SuperDappAgent } = require('@superdapp/agents');
 const sdAgent = SUPERDAPP_TOKEN
@@ -2058,7 +2136,7 @@ const sdSessions = new Map();
 
 function getSdSession(roomId) {
   if (!sdSessions.has(roomId)) {
-    sdSessions.set(roomId, { cvData: null, history: [], quizState: null, pendingCertificate: null, lastActivity: Date.now() });
+    sdSessions.set(roomId, { cvData: null, userData: null, history: [], quizState: null, pendingCertificate: null, pendingQuiz: null, pendingQuizIntent: false, collectingUserData: null, lastActivity: Date.now() });
   }
   const s = sdSessions.get(roomId);
   s.lastActivity = Date.now();
@@ -2160,6 +2238,7 @@ function sdConvertDriveLink(url) {
 }
 
 async function sdDownloadFile(url) {
+  console.log('[SD-DOWNLOAD] Descargando:', url.substring(0, 80));
   const directUrl = sdConvertDriveLink(url);
   const response  = await axios.get(directUrl, {
     responseType: 'arraybuffer', timeout: 20000, maxRedirects: 5,
@@ -2168,11 +2247,14 @@ async function sdDownloadFile(url) {
   });
   const buffer   = Buffer.from(response.data);
   const filename = url.includes('drive.google') ? 'cv.pdf' : (url.split('/').pop().split('?')[0] || 'cv.pdf');
+  console.log('[SD-DOWNLOAD] OK | archivo:', filename, '| tamaño:', buffer.length, 'bytes');
   return { file: buffer.toString('base64'), filename };
 }
 
 async function sdCallBackend(endpoint, body) {
+  console.log('[SD-BACKEND] POST', endpoint);
   const response = await axios.post('http://localhost:' + PORT + endpoint, body, { timeout: 90000 });
+  console.log('[SD-BACKEND] OK', endpoint, '| status:', response.status);
   return response.data;
 }
 
@@ -2233,23 +2315,18 @@ async function sdCallLLM(messages, { tools, maxTokens = 800, temperature = 0.7 }
     console.log('[SD-LLM] Sin GROQ_API_KEY, usando MiniMax');
   }
 
-  // Fallback: MiniMax via callAIMessages (sin tool calling)
-  const userMessages = messages.filter(m => m.role !== 'system');
-  const system = messages.find(m => m.role === 'system')?.content || null;
-  const text = await callAIMessages(userMessages, { maxTokens, system });
+  // Fallback: MiniMax via callAIMessages
+  // MiniMax no soporta role:tool — filtrar y convertir solo a user/assistant
+  const cleanMessages = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+    if (m.role === 'tool') continue; // se inyectó como user message antes
+    if (m.role === 'user' || m.role === 'assistant') cleanMessages.push({ role: m.role, content: m.content || '' });
+  }
+  const baseSystem = messages.find(m => m.role === 'system')?.content || '';
+  const minimaxSystem = baseSystem + '\n\nSi necesitas analizar un CV, optimizar un CV, generar carta o hacer quiz, responde con XML así:\n<minimax:tool_call>\n<invoke name="TOOL_NAME">\n<parameter name="PARAM">VALUE</parameter>\n</invoke>\n</minimax:tool_call>\n\nHerramientas disponibles: analyze_cv(url), optimize_cv(lang), generate_cover_letter(job_title,company), start_skill_quiz(skill,level). NUNCA pidas wallet address ni menciones NFT o blockchain por tu cuenta.';
+  const text = await callAIMessages(cleanMessages, { maxTokens, system: minimaxSystem });
   return { provider: 'minimax', data: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: text } }] } };
-}
-
-async function sdEvaluateQuiz(skill, questions, answers) {
-  const prompt = 'Eres un evaluador técnico. El usuario respondió un quiz de "' + skill + '".\n\n' +
-    questions.map((q, i) => (i + 1) + '. ' + q.question + '\n   Respuesta: ' + (answers[i] || '(sin respuesta)')).join('\n') +
-    '\n\nDevuelve EXACTAMENTE este JSON (sin markdown):\n{"score":85,"level":"Mid","passed":true,"evaluation":"Evaluación breve en español."}';
-
-  const result = await sdCallLLM([{ role: 'user', content: prompt }], { maxTokens: 300, temperature: 0.2 });
-  const text   = result.data.choices[0].message.content.trim();
-  const match  = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Respuesta del evaluador inválida');
-  return JSON.parse(match[0]);
 }
 
 async function sdExecuteTool(toolName, args, session) {
@@ -2275,24 +2352,48 @@ async function sdExecuteTool(toolName, args, session) {
     if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
     const cv     = session.cvData;
     const target = (args.job_title ? ' para el puesto de ' + args.job_title : '') + (args.company ? ' en ' + args.company : '');
-    const prompt = 'Genera una carta de presentacion profesional en espanol' + target + ' para ' + (cv.name || 'el candidato') +
+    const prompt = 'Genera una carta de presentacion profesional en español' + target + ' para ' + (cv.name || 'el candidato') +
       ', ' + (cv.current_position || 'profesional') + ' con skills en ' + (cv.skills || []).slice(0, 5).join(', ') +
-      '. Formal, 3 párrafos, lista para enviar. Solo devuelve la carta.';
-    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
-      { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
-    );
-    return JSON.stringify({ cover_letter: r.data.choices[0].message.content });
+      '. Formal, 3 párrafos, lista para enviar. Solo devuelve la carta, sin título ni encabezado adicional.';
+    let letter = '';
+    // Intentar Groq primero, fallback a callAI
+    if (GROQ_API_KEY) {
+      try {
+        const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+          { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
+          { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' }, timeout: 20000 }
+        );
+        letter = r.data.choices[0].message.content;
+      } catch(e) {
+        console.warn('[generate_cover_letter] Groq falló:', e.message, '— usando MiniMax');
+      }
+    }
+    if (!letter) {
+      letter = await callAI(prompt, { maxTokens: 600 });
+    }
+    return JSON.stringify({ cover_letter: letter });
   }
 
   if (toolName === 'start_skill_quiz') {
-    const result    = await sdCallBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
-    const questions = result.questions || [];
-    if (!questions.length) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
-    session.quizState = { skill: args.skill, questions, current: 0, answers: [] };
-    const q = questions[0];
-    return JSON.stringify({ quiz_started: true, skill: args.skill, total_questions: questions.length,
-      first_question: q.question, options: q.options || null });
+    // Requiere CV cargado o datos mínimos del usuario
+    if (!session.cvData && !session.userData) {
+      session.pendingQuiz = { skill: args.skill, level: args.level || 'mid' };
+      session.collectingUserData = { step: 'name' };
+      return JSON.stringify({ error: 'need_user_data', message: 'Para generar tu certificado necesito algunos datos. ¿Cuál es tu nombre completo?' });
+    }
+    const result = await sdCallBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es', mode: 'bot' });
+    if (!result.quizId || !result.question) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
+    const q = result.question;
+    session.quizState = {
+      skill: args.skill, quizId: result.quizId,
+      total: result.total, current: 1, answers: [],
+      currentQuestion: q
+    };
+    return JSON.stringify({
+      quiz_started: true, skill: args.skill,
+      total_questions: result.total, question_number: 1,
+      question: q.question, options: q.options || null, type: q.type
+    });
   }
 
   if (toolName === 'mint_certificate') {
@@ -2313,7 +2414,11 @@ async function sdRunAgent(userMessage, session) {
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
-  const systemPrompt = 'Eres LikeTalent, agente de validacion de talento Web3. Usa las herramientas disponibles cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\n- Wallet (0x...) con certificado pendiente → mint_certificate\nResponde siempre en español, breve y útil.';
+  const cvContext = session.cvData ? `CV cargado: ${session.cvData.name || 'candidato'}, ${session.cvData.current_position || ''}, skills: ${(session.cvData.skills||[]).join(', ') || 'pendiente'}.` : '';
+  const systemPrompt = `Tu nombre es LikeTalent. Eres un agente de validacion de talento Web3. ${cvContext}
+Herramientas: analyze_cv(url), optimize_cv(lang), generate_cover_letter(job_title,company), start_skill_quiz(skill,level).
+Si ya hay CV cargado, usalo directamente. NUNCA pidas wallet ni menciones blockchain salvo que el usuario envíe 0x.
+Responde en español, breve y útil.`;
 
   const messages = [{ role: 'system', content: systemPrompt }, ...session.history];
 
@@ -2333,11 +2438,56 @@ async function sdRunAgent(userMessage, session) {
     const assistantMsg = choice.message;
     messages.push(assistantMsg);
 
-    // MiniMax no soporta tool calling — responde directo
-    if (result.provider === 'minimax' || choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
-      const finalText = assistantMsg.content || 'Listo!';
+    // MiniMax devuelve tool calls como XML en el contenido — parsear y ejecutar
+    if (result.provider === 'minimax') {
+      const content = assistantMsg.content || '';
+      const toolCallMatch = content.match(/<minimax:tool_call>[\s\S]*?<invoke name="(\w+)">([\s\S]*?)<\/invoke>[\s\S]*?<\/minimax:tool_call>/);
+      if (toolCallMatch) {
+        const toolName = toolCallMatch[1];
+        const paramsXml = toolCallMatch[2];
+        const args = {};
+        const paramRegex = /<parameter name="(\w+)">([\s\S]*?)<\/parameter>/g;
+        let m;
+        while ((m = paramRegex.exec(paramsXml)) !== null) args[m[1]] = m[2].trim();
+        console.log('[SD-AGENT] MiniMax tool call detectado:', toolName, args);
+        let toolResult;
+        try { toolResult = await sdExecuteTool(toolName, args, session); }
+        catch(e) { toolResult = JSON.stringify({ error: e.message }); }
+        // start_skill_quiz → formatear pregunta directamente sin revelar la respuesta
+        if (toolName === 'start_skill_quiz') {
+          const d = JSON.parse(toolResult);
+          if (d.error === 'need_user_data') {
+            session.history.push({ role: 'assistant', content: d.message });
+            return d.message;
+          }
+          if (d.quiz_started) {
+            let msg = `**Quiz: ${d.skill}** — Pregunta 1/${d.total_questions}\n\n${d.question}`;
+            if (d.options) msg += '\n\n' + d.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+            session.history.push({ role: 'assistant', content: msg });
+            console.log('[SD-REPLY] (minimax+quiz):', msg.substring(0, 100));
+            return msg;
+          }
+        }
+        // Segunda llamada a MiniMax con el resultado de la herramienta
+        messages.push({ role: 'assistant', content: content });
+        messages.push({ role: 'user', content: 'Resultado de ' + toolName + ': ' + toolResult + '\n\nResponde al usuario con los resultados en español, de forma clara y útil.' });
+        const result2 = await sdCallLLM(messages, {});
+        const finalText = result2.data.choices[0].message.content || 'Listo!';
+        session.history.push({ role: 'assistant', content: finalText });
+        console.log('[SD-REPLY] (minimax+tool):', finalText.substring(0, 200));
+        return finalText;
+      }
+      const finalText = content || 'Listo!';
       session.history.push({ role: 'assistant', content: finalText });
       console.log('[SD-REPLY] (' + result.provider + '):', finalText.substring(0, 200));
+      return finalText;
+    }
+
+    // Groq: finish_reason === 'tool_calls'
+    if (choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
+      const finalText = assistantMsg.content || 'Listo!';
+      session.history.push({ role: 'assistant', content: finalText });
+      console.log('[SD-REPLY] (groq):', finalText.substring(0, 200));
       return finalText;
     }
 
@@ -2347,6 +2497,22 @@ async function sdRunAgent(userMessage, session) {
       let toolResult;
       try { toolResult = await sdExecuteTool(toolCall.function.name, args, session); }
       catch(e) { console.error('[SD-TOOL ERROR]', toolCall.function.name, e.message); toolResult = JSON.stringify({ error: e.message }); }
+
+      // start_skill_quiz → devolver pregunta directamente sin re-pasar por el LLM
+      if (toolCall.function.name === 'start_skill_quiz') {
+        const d = JSON.parse(toolResult);
+        if (d.error === 'need_user_data') {
+          session.history.push({ role: 'assistant', content: d.message });
+          return d.message;
+        }
+        if (d.quiz_started) {
+          let msg = `**Quiz: ${d.skill}** — Pregunta 1/${d.total_questions}\n\n${d.question}`;
+          if (d.options) msg += '\n\n' + d.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+          session.history.push({ role: 'assistant', content: msg });
+          return msg;
+        }
+      }
+
       messages.push({ role: 'tool', tool_call_id: toolCall.id, content: toolResult });
     }
   }
@@ -2372,41 +2538,150 @@ function sdIsWallet(text) {
 async function handleMessage(text, sessionKey, sendFn, platform) {
   const session = getSdSession(sessionKey);
   console.log('[' + platform + '] msg:', text.substring(0, 80), '| session:', sessionKey);
+  console.log('[' + platform + '] quizState:', session.quizState ? `activo skill=${session.quizState.skill} current=${session.quizState.current}/${session.quizState.total} answers=${session.quizState.answers.length}` : 'null');
+  console.log('[' + platform + '] pendingCert:', session.pendingCertificate ? session.pendingCertificate.skill : 'null');
+
+  // 0. Comandos especiales
+  if (text.startsWith('/generate-test-certificate') || text.startsWith('/generar-certificado-prueba')) {
+    const skills = ['Solidity', 'React', 'Node.js', 'Smart Contracts', 'Web3.js', 'TypeScript'];
+    const levels = ['Junior', 'Mid', 'Senior'];
+    const skill  = skills[Math.floor(Math.random() * skills.length)];
+    const level  = levels[Math.floor(Math.random() * levels.length)];
+    const score  = Math.floor(Math.random() * 30) + 70; // 70-100
+    await sendFn(`Generando certificado de prueba: **${skill}** — ${level} (${score}/100)...`);
+    try {
+      console.log('[TEST-CERT] Generando PDF | skill:', skill, '| level:', level, '| score:', score);
+      const pdfBuffer = await buildCertificatePDF({
+        skill, score, level,
+        wallet: 'LikeTalent-Test',
+        issuedAt: new Date().toISOString(),
+        contentHash: null, explorerUrl: null
+      });
+      console.log('[TEST-CERT] PDF generado | tamaño:', pdfBuffer.length, 'bytes');
+      await sendFn('🎓 Certificado de prueba generado:', { buffer: pdfBuffer, name: `test-certificado-${skill.replace(/\s+/g,'-')}.pdf` });
+    } catch(e) {
+      console.error('[TEST-CERT] Error:', e.message, e.stack);
+      await sendFn('Error generando certificado: ' + e.message);
+    }
+    return;
+  }
+
+  // 0b. Recopilando datos del usuario antes del quiz
+  if (session.collectingUserData && !text.startsWith('/')) {
+    const step = session.collectingUserData.step;
+    if (step === 'name') {
+      session.collectingUserData = { step: 'id', name: text.trim() };
+      await sendFn(`Gracias **${text.trim()}**. Ahora indícame tu número de identificación (cédula, pasaporte, etc.):`);
+      return;
+    }
+    if (step === 'id') {
+      session.userData = { name: session.collectingUserData.name, id: text.trim() };
+      session.collectingUserData = null;
+      console.log('[QUIZ] Datos recopilados:', session.userData);
+      // Iniciar el quiz pendiente
+      if (session.pendingQuiz) {
+        const { skill, level } = session.pendingQuiz;
+        session.pendingQuiz = null;
+        await sendFn(`Perfecto. Iniciando quiz de **${skill}** (${level})...`);
+        const result = await sdCallBackend('/api/generate-quiz', { skill, level, lang: 'es', mode: 'bot' });
+        if (!result.quizId || !result.question) { await sendFn('Error al generar el quiz. Intenta de nuevo.'); return; }
+        const q = result.question;
+        session.quizState = { skill, quizId: result.quizId, total: result.total, current: 1, answers: [], currentQuestion: q };
+        let msg = `**Quiz: ${skill}** — Pregunta 1/${result.total}\n\n${q.question}`;
+        if (q.options) msg += '\n\n' + q.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+        await sendFn(msg);
+        return;
+      }
+    }
+    return;
+  }
 
   // 1. Quiz activo — colectar respuesta
   if (session.quizState && !text.startsWith('/')) {
     const quiz = session.quizState;
     quiz.answers.push(text.trim());
-    quiz.current++;
 
-    if (quiz.current < quiz.questions.length) {
-      const q = quiz.questions[quiz.current];
-      let msg = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
-      if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
-      await sendFn(msg);
+    if (quiz.current < quiz.total) {
+      // Pedir siguiente pregunta al backend
+      try {
+        const next = await sdCallBackend('/api/quiz-next', { quizId: quiz.quizId });
+        quiz.current++;
+        quiz.currentQuestion = next.question;
+        const q = next.question;
+        let msg = `**Quiz: ${quiz.skill}** — Pregunta ${quiz.current}/${quiz.total}\n\n${q.question}`;
+        if (q.options) msg += '\n\n' + q.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+        await sendFn(msg);
+      } catch(e) {
+        await sendFn('Error obteniendo siguiente pregunta. Intenta de nuevo.');
+      }
     } else {
       await sendFn('Evaluando tus respuestas...');
       const savedQuiz = { ...quiz };
       session.quizState = null;
+      console.log('[QUIZ] Submitting | quizId:', savedQuiz.quizId, '| answers:', savedQuiz.answers);
 
+      // Evaluar con las preguntas acumuladas y respuestas
       let result;
-      try { result = await sdEvaluateQuiz(savedQuiz.skill, savedQuiz.questions, savedQuiz.answers); }
-      catch(e) { await sendFn('Error al evaluar. Intenta de nuevo.'); return; }
+      try {
+        const evalResult = await sdCallBackend('/api/submit-quiz', { quizId: savedQuiz.quizId, answers: savedQuiz.answers });
+        result = evalResult;
+        console.log('[QUIZ] Submit result | score:', result.score, '| passed:', result.passed);
+      } catch(e) {
+        console.error('[QUIZ] Submit error:', e.message);
+        await sendFn('Error al evaluar. Intenta de nuevo.'); return;
+      }
 
-      const passed = result.score >= PASS_SCORE;
-      let msg = 'Quiz de ' + savedQuiz.skill + ' completado!\n\nScore: ' + result.score + '/100 — Nivel: ' + result.level + '\n\n' + result.evaluation;
+      const passed = result.passed || result.score >= PASS_SCORE;
+      const level  = result.level || (result.score >= 80 ? 'Senior' : result.score >= 60 ? 'Mid' : 'Junior');
+      let msg = `**Quiz de ${savedQuiz.skill} completado!**\n\nScore: **${result.score}/100** — Nivel: ${level}\n`;
+
+      // Mostrar revisión de respuestas
+      if (result.results && result.results.length) {
+        msg += '\n**Revisión:**\n';
+        result.results.forEach((r, i) => {
+          const icon = r.isCorrect ? '✅' : '❌';
+          const correctOption = r.options ? r.options[r.correct] : r.model_answer || '';
+          msg += `\n${icon} P${i + 1}: ${r.question.substring(0, 60)}...\n`;
+          if (!r.isCorrect) msg += `   Respuesta correcta: **${correctOption}**\n`;
+        });
+      }
+
       if (passed) {
-        session.pendingCertificate = { skill: savedQuiz.skill, score: result.score, level: result.level };
-        msg += '\n\n✅ Aprobaste! Envía tu wallet address (0x...) para emitir tu certificado en blockchain.';
+        msg += '\n✅ Aprobaste!';
+        await sendFn(msg);
+        // Generar PDF automáticamente
+        try {
+          console.log('[QUIZ] Generando PDF certificado...');
+          const holderName = session.cvData?.name || session.userData?.name || 'Participante';
+          const holderId   = session.userData?.id || null;
+          const pdfBuffer = await buildCertificatePDF({
+            skill: savedQuiz.skill, score: result.score, level,
+            wallet: holderId ? `ID: ${holderId}` : holderName,
+            issuedAt: new Date().toISOString(),
+            contentHash: null, explorerUrl: null
+          });
+          console.log('[QUIZ] PDF generado | tamaño:', pdfBuffer.length, 'bytes');
+          await sendFn('🎓 Tu certificado está listo:', { buffer: pdfBuffer, name: `certificado-${savedQuiz.skill.replace(/\s+/g,'-')}.pdf` });
+        } catch(e) {
+          console.error('[QUIZ] Error generando PDF:', e.message, e.stack?.split('\n')[1]);
+          await sendFn('Hubo un error generando el PDF. Contacta al soporte.');
+        }
+        // Guardar para mint opcional pero NO mencionarlo — solo si el usuario manda 0x
+        session.pendingCertificate = { skill: savedQuiz.skill, score: result.score, level };
+        return;
       } else {
-        msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Intenta de nuevo con /skills ' + savedQuiz.skill;
+        msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Puedes intentarlo de nuevo.';
       }
       await sendFn(msg);
     }
     return;
   }
 
-  // 2. Certificado pendiente + wallet recibida
+  // 2. Certificado pendiente
+  if (session.pendingCertificate && !sdIsWallet(text)) {
+    // No es wallet — limpiar y dejar que el agente responda normalmente
+    session.pendingCertificate = null;
+  }
   if (session.pendingCertificate && sdIsWallet(text)) {
     const cert = { ...session.pendingCertificate };
     session.pendingCertificate = null;
@@ -2422,17 +2697,143 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
     return;
   }
 
-  // 3. Agente con tool calling
+  // 3. Detección de intención del agente — ejecutar herramientas directamente sin depender del LLM
+  const lower = text.toLowerCase();
+
+  // 3a. Quiz / validar skill: el agente inicia el quiz real con herramienta
+  const quizGeneric = ['un skill', 'una skill', 'skill', 'skil', 'skills', 'una habilidad', 'un conocimiento',
+    'mis skills', 'mis habilidades', 'habilidad', 'conocimiento', 'algo', 'cualquiera', 'lo que sea'];
+  const quizMatch = lower.match(/(?:validar|quiz|evaluar|certificar|examen|test)\s+(?:de\s+|en\s+|mi\s+|un\s+|una\s+)?([\w\s.#+áéíóúñ��]+)/i);
+  // También capturar "validar" o "quiero validar" sin skill especificado
+  const quizBare = !quizMatch && /^(?:validar|quiz|evaluar|certificar|examen|quiero\s+validar|hacer\s+quiz)\s*$/i.test(lower.trim());
+  if ((quizMatch || quizBare) && !session.quizState) {
+    const rawSkill = quizMatch ? quizMatch[1].trim() : '';
+    // Si el skill es genérico o muy corto, preguntar cuál
+    if (!rawSkill || quizGeneric.includes(rawSkill.toLowerCase()) || rawSkill.length < 3) {
+      // Sugerir skills del CV si está cargado
+      const cvSkills = session.cvData?.skills;
+      const suggestions = cvSkills && cvSkills.length > 0
+        ? cvSkills.slice(0, 6).map(s => `**${s}**`).join(', ')
+        : '**React**, **Python**, **GCP**, **Jira**, **Solidity**...';
+      const askMsg = `¿Qué skill quieres validar?\n\nOpciones: ${suggestions}\n\nTambién puedes indicar el nivel: básico, intermedio o avanzado.`;
+      session.history.push({ role: 'user', content: text });
+      session.history.push({ role: 'assistant', content: askMsg });
+      session.pendingQuizIntent = true;
+      await sendFn(askMsg);
+      return;
+    }
+    const level = lower.includes('senior') ? 'senior' : lower.includes('junior') ? 'junior' : 'mid';
+    console.log('[AGENT] Intención detectada: start_skill_quiz | skill:', rawSkill, '| level:', level);
+    try {
+      const result = await sdExecuteTool('start_skill_quiz', { skill: rawSkill, level }, session);
+      const data = JSON.parse(result);
+      if (data.error === 'need_user_data') {
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: data.message });
+        await sendFn(data.message);
+      } else if (data.quiz_started) {
+        let msg = `**Quiz: ${data.skill}** — Pregunta 1/${data.total_questions}\n\n${data.question}`;
+        if (data.options) msg += '\n\n' + data.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: msg });
+        await sendFn(msg);
+      } else {
+        await sendFn(data.error || 'No se pudo generar el quiz. Intenta de nuevo.');
+      }
+    } catch(e) {
+      console.error('[AGENT] Error quiz:', e.message);
+      await sendFn('Error iniciando quiz: ' + e.message);
+    }
+    return;
+  }
+
+  // 3a-bis. Respuesta pendiente de quiz: el usuario indica el skill después de que se le preguntó
+  if (session.pendingQuizIntent && !session.quizState) {
+    session.pendingQuizIntent = false;
+    const level = lower.includes('senior') ? 'senior' : lower.includes('junior') ? 'junior' : 'mid';
+    const skill = text.replace(/\b(junior|mid|senior|nivel)\b/gi, '').trim();
+    if (skill.length < 2) {
+      await sendFn('Indica el nombre del skill. Ejemplo: **React**, **Python**, **GCP**.');
+      session.pendingQuizIntent = true;
+      return;
+    }
+    console.log('[AGENT] Quiz pendiente resuelto | skill:', skill, '| level:', level);
+    try {
+      const result = await sdExecuteTool('start_skill_quiz', { skill, level }, session);
+      const data = JSON.parse(result);
+      if (data.error === 'need_user_data') {
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: data.message });
+        await sendFn(data.message);
+      } else if (data.quiz_started) {
+        let msg = `**Quiz: ${data.skill}** — Pregunta 1/${data.total_questions}\n\n${data.question}`;
+        if (data.options) msg += '\n\n' + data.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: msg });
+        await sendFn(msg);
+      } else {
+        await sendFn(data.error || 'No se pudo generar el quiz. Intenta de nuevo.');
+      }
+    } catch(e) {
+      console.error('[AGENT] Error quiz:', e.message);
+      await sendFn('Error iniciando quiz: ' + e.message);
+    }
+    return;
+  }
+
+  // 3b. Carta de presentación: el agente detecta y ejecuta
+  if (session.cvData) {
+    if (lower.includes('carta') && lower.includes('presentaci')) {
+      const parts = text.match(/(?:de|como|puesto)?\s*([\w\s]+?)(?:\s+(?:en|para|at|empresa)\s+)([\w\s]+)/i);
+      const jobTitle = parts ? parts[1].trim() : '';
+      const company = parts ? parts[2].trim() : '';
+      if (jobTitle && company) {
+        console.log('[AGENT] Intención detectada: generate_cover_letter | job:', jobTitle, '| company:', company);
+        await sendFn('Generando carta de presentación...');
+        try {
+          const result = await sdExecuteTool('generate_cover_letter', { job_title: jobTitle, company }, session);
+          const data = JSON.parse(result);
+          if (data.cover_letter) {
+            session.history.push({ role: 'user', content: text });
+            session.history.push({ role: 'assistant', content: data.cover_letter });
+            await sendFn(data.cover_letter);
+          } else {
+            await sendFn('No pude generar la carta. Intenta de nuevo.');
+          }
+        } catch(e) {
+          console.error('[AGENT] Error cover letter:', e.message);
+          await sendFn('Error generando la carta: ' + e.message);
+        }
+        return;
+      }
+    }
+
+    // 3c. Optimizar CV: el agente detecta y ejecuta
+    if (lower.includes('optimiz') && (lower.includes('cv') || lower.includes('currículum') || lower.includes('curriculum'))) {
+      const lang = lower.includes('english') || lower.includes('inglés') || lower.includes('ingles') ? 'en' : 'es';
+      console.log('[AGENT] Intención detectada: optimize_cv | lang:', lang);
+      await sendFn('Optimizando tu CV...');
+      try {
+        const result = await sdExecuteTool('optimize_cv', { lang }, session);
+        const data = JSON.parse(result);
+        const reply = data.error
+          ? data.error
+          : `**CV Optimizado** ✅\n\nATS Score: **${data.ats_score || 'N/A'}**\n\n${data.professional_summary || ''}`;
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: reply });
+        await sendFn(reply);
+      } catch(e) {
+        console.error('[AGENT] Error optimize:', e.message);
+        await sendFn('Error optimizando: ' + e.message);
+      }
+      return;
+    }
+  }
+
+  // 4. Agente LLM con tool calling (fallback general)
   const reply = await sdRunAgent(text, session);
   await sendFn(reply);
 
-  // Si el agente inició un quiz, enviar primera pregunta
-  if (session.quizState && session.quizState.current === 0) {
-    const q = session.quizState.questions[0];
-    let msg = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
-    if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
-    await sendFn(msg);
-  }
 }
 
 // ── SuperDapp Webhook ─────────────────────────────────────────────────────────
@@ -2481,6 +2882,17 @@ async function tgSend(chatId, text) {
   }
 }
 
+async function tgSendDocument(chatId, buffer, filename, caption) {
+  const FormData = require('form-data');
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('document', buffer, { filename: filename || 'documento.pdf', contentType: 'application/pdf' });
+  if (caption) form.append('caption', caption);
+  await axios.post('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendDocument', form, {
+    headers: form.getHeaders(), timeout: 30000
+  });
+}
+
 if (TELEGRAM_TOKEN) {
   console.log('[Telegram] Bot configurado');
 } else {
@@ -2500,7 +2912,14 @@ app.post('/telegram', async function(req, res) {
     const isBot  = message.from && message.from.is_bot;
     if (isBot) return;
 
-    const sendFn = async (msg) => tgSend(chatId, msg);
+    const sendFn = async (msg, file) => {
+      if (file) {
+        if (msg) await tgSend(chatId, msg);
+        await tgSendDocument(chatId, file.buffer, file.name);
+      } else {
+        await tgSend(chatId, msg);
+      }
+    };
     await handleMessage(text, 'tg_' + chatId, sendFn, 'Telegram');
   } catch(e) {
     console.error('[Telegram] Error:', e.message);
@@ -2545,8 +2964,16 @@ if (DISCORD_TOKEN) {
 
     dcClient.on('messageCreate', async (message) => {
       if (message.author.bot) return;
-      const text = message.content.trim();
-      if (!text) return;
+
+      let text = message.content.trim();
+      const hasAttachment = message.attachments.size > 0;
+
+      console.log(`[Discord] messageCreate | usuario: ${message.author.username} | texto: "${text.substring(0, 80)}" | adjuntos: ${message.attachments.size}`);
+
+      if (!text && !hasAttachment) {
+        console.log('[Discord] Mensaje vacío sin adjuntos, ignorando');
+        return;
+      }
 
       // Siempre responder en #general si el mensaje viene de ese servidor
       const targetChannel = message.guildId
@@ -2554,17 +2981,53 @@ if (DISCORD_TOKEN) {
         : message.channel;
 
       const sessionKey = 'dc_' + (message.guildId ? DISCORD_GENERAL_CHANNEL + '_' + message.author.id : message.author.id);
-      const sendFn = async (msg) => {
-        // Discord limita a 2000 chars — dividir si es necesario
-        for (let i = 0; i < msg.length; i += 1900) {
-          await targetChannel.send(msg.slice(i, i + 1900));
+      const sendFn = async (msg, file) => {
+        console.log(`[Discord] ENVIANDO → "${(msg||'').substring(0, 120)}"`);
+        if (file) {
+          await targetChannel.send({ content: msg || '', files: [{ attachment: file.buffer, name: file.name }] });
+        } else {
+          for (let i = 0; i < msg.length; i += 1900) {
+            await targetChannel.send(msg.slice(i, i + 1900));
+          }
         }
       };
 
       try {
+        // Archivo adjunto → llamar analyze_cv directamente sin pasar por el LLM
+        if (hasAttachment) {
+          const attachment = message.attachments.first();
+          const ext = (attachment.name || '').split('.').pop().toLowerCase();
+          console.log(`[Discord] ATTACHMENT | archivo: ${attachment.name} | ext: ${ext} | url: ${attachment.url.substring(0, 80)}`);
+          if (['pdf', 'docx', 'doc', 'txt'].includes(ext)) {
+            await sendFn('Analizando tu CV... un momento ⏳');
+            const session = getSdSession(sessionKey);
+            console.log('[Discord] → sdExecuteTool analyze_cv START');
+            const result = await sdExecuteTool('analyze_cv', { url: attachment.url }, session);
+            console.log('[Discord] → sdExecuteTool analyze_cv END');
+            const data = JSON.parse(result);
+            const score = data.score || data.overall_score || session.cvData?.overall_score || 0;
+            const reply = `**Análisis de CV completado** ✅\n\n` +
+              `👤 **${data.name || 'Sin nombre'}** — ${data.current_position || ''}\n` +
+              `📊 Score: **${score}/100** | Web3: ${data.web3_relevance || 'N/A'}\n` +
+              `🛠 Skills: ${(data.skills || []).slice(0, 6).join(', ')}\n` +
+              `💡 Mejoras: ${(data.improvements || []).slice(0, 2).join(' | ')}\n\n` +
+              `Puedes pedirme: **optimizar CV**, **carta de presentación** o **validar un skill**.`;
+            await sendFn(reply);
+            // Guardar en historial para que el agente sepa que ya tiene CV
+            const cvSummary = `[CV CARGADO] Analicé el CV de ${data.name || 'usuario'}. Posición: ${data.current_position || 'no especificada'}. Skills: ${(data.skills||[]).join(', ') || 'pendiente de análisis'}. Score: ${score}/100. El CV ya está en mi memoria, puedo optimizarlo, generar carta de presentación o hacer quiz sin pedirlo de nuevo.`;
+            getSdSession(sessionKey).history.push({ role: 'assistant', content: cvSummary });
+          } else {
+            console.log('[Discord] Adjunto no es CV, ignorando ext:', ext);
+            await sendFn('Solo acepto archivos PDF, DOCX o TXT.');
+          }
+          return;
+        }
+
+        console.log(`[Discord] RECIBIDO texto | usuario: ${message.author.username} | msg: "${text.substring(0, 120)}"`);
         await handleMessage(text, sessionKey, sendFn, 'Discord');
       } catch(e) {
-        console.error('[Discord] Error:', e.message);
+        console.error('[Discord] ERROR:', e.message, e.stack?.split('\n')[1]);
+        await sendFn('Ocurrió un error procesando tu solicitud. Intenta de nuevo.');
       }
     });
 

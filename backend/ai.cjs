@@ -52,9 +52,20 @@ function httpRequest(urlStr, options, body) {
 // Used by: MiniMax, Claude (Anthropic)
 // Trick: prefill assistant message to skip thinking preamble & force JSON output
 
+const isMiniMax = BASE_URL.includes('minimax');
+
 async function callAnthropic({ messages, maxTokens, prefill, system }) {
   const msgs = [...messages];
-  if (prefill) msgs.push({ role: 'assistant', content: prefill });
+  // MiniMax no soporta prefill — devuelve vacío. Solo usar con Anthropic real.
+  const usePrefill = prefill && !isMiniMax;
+  if (usePrefill) msgs.push({ role: 'assistant', content: prefill });
+  // Para MiniMax: reforzar en el último mensaje que responda JSON puro
+  if (prefill && isMiniMax && msgs.length > 0) {
+    const last = msgs[msgs.length - 1];
+    if (last.role === 'user' && !last.content.includes('ONLY valid JSON')) {
+      last.content += '\n\nIMPORTANT: Respond with ONLY a valid JSON object starting with {. No markdown, no explanation.';
+    }
+  }
 
   const payload = { model: MODEL, max_tokens: maxTokens, messages: msgs };
   if (system) payload.system = system;
@@ -77,7 +88,7 @@ async function callAnthropic({ messages, maxTokens, prefill, system }) {
   const textBlock = (parsed?.content || []).find(c => c.type === 'text');
   let text = textBlock?.text || '';
   // Reattach prefill — model continues from it but doesn't echo it back
-  if (prefill && !text.trimStart().startsWith(prefill.trim())) {
+  if (usePrefill && !text.trimStart().startsWith(prefill.trim())) {
     text = prefill + text;
   }
   return text;
