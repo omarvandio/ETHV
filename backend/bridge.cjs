@@ -274,6 +274,10 @@ async function executeTool(toolName, args, session) {
     );
     return JSON.stringify({ cover_letter: r.data.choices[0].message.content });
   }
+  if (text === '/hola' || text === '/start') {
+  await send(isChannel, roomId, chatId, 'Hola! Soy LikeTalent, tu agente de validacion de talento Web3.\n\nPuedo hacer:\n- Manda el link de tu CV (Google Drive / PDF) para analizarlo\n- /optimizar — CV optimizado para ATS\n- /coverletter — carta de presentacion\n- /skills [skill] — valida tu skill con quiz\n  Ejemplo: /skills Solidity\n\nEscribe /hola para ver este menu de nuevo.');
+  return;
+}
 
   if (toolName === 'start_skill_quiz') {
     const result    = await callBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
