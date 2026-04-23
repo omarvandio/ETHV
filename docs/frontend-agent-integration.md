@@ -1,6 +1,6 @@
 # Frontend-Agent Integration Guide
 
-This guide covers how to integrate a React/Vite frontend with OpenClaw agents for the ETHV talent validation system.
+This guide covers how to integrate a React/Vite frontend with OpenClaw agents for the LikeTalent talent validation system.
 
 ## Overview
 
@@ -67,7 +67,7 @@ const response = await fetch('http://localhost:18789/v1/responses', {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    model: "openclaw:ethv",  // Target the ETHV agent
+    model: "openclaw:ethv",  // Target the LikeTalent agent
     input: [
       {
         type: "input_file",
@@ -84,7 +84,7 @@ const response = await fetch('http://localhost:18789/v1/responses', {
         content: "Please analyze this CV and extract the candidate's skills."
       }
     ],
-    instructions: "You are ETHV, a talent validator. Analyze the CV and identify technical skills."
+    instructions: "You are LikeTalent, a talent validator. Analyze the CV and identify technical skills."
   })
 });
 
@@ -593,7 +593,7 @@ export function useOpenClaw() {
           messages: [
             {
               role: "system",
-              content: "You are ETHV, a talent validator. Analyze CVs and identify technical skills."
+              content: "You are LikeTalent, a talent validator. Analyze CVs and identify technical skills."
             },
             {
               role: "user",
@@ -637,7 +637,7 @@ export function useOpenClaw() {
           messages: [
             {
               role: "system",
-              content: "You are ETHV, a talent validator."
+              content: "You are LikeTalent, a talent validator."
             },
             {
               role: "user",
