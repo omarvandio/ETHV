@@ -2129,7 +2129,22 @@ const { SuperDappAgent } = require('@superdapp/agents');
 const sdAgent = SUPERDAPP_TOKEN
   ? new SuperDappAgent({ apiToken: SUPERDAPP_TOKEN, baseUrl: 'https://api.superdapp.ai' })
   : null;
-if (sdAgent) console.log('[SuperDapp] Agente inicializado');
+if (sdAgent) {
+  console.log('[SuperDapp] Agente inicializado');
+  // Fix: el dist compilado del SDK no tiene el fallback a rm.roomId que sí tiene
+  // el TypeScript source. Para canales/supergrupos el webhook trae roomId (UUID)
+  // pero no senderId, por lo que getRoomId devuelve `memberId-undefined` → 403.
+  // Patch alineado con el source: https://github.com/SuperDappAI/superdapp-js
+  Object.getPrototypeOf(sdAgent).getRoomId = function(message) {
+    const rm = message.rawMessage;
+    if (rm?.senderId && rm?.memberId) return `${rm.memberId}-${rm.senderId}`;
+    if (rm?.roomId)    return rm.roomId;
+    if (rm?.channelId) return rm.channelId;
+    if (rm?.memberId)  return rm.memberId;
+    return '';
+  };
+  console.log('[SuperDapp] getRoomId patch aplicado (soporte canales/supergrupos)');
+}
 
 // ── Registrar handlers usando la API oficial del SDK ──────────────────────────
 // Lazy: se llama en el primer webhook porque handleMessage se define más abajo.
@@ -3049,7 +3064,7 @@ app.post('/webhook', async function(req, res) {
     // Registrar los handlers la primera vez que llega un mensaje
     sdRegisterHandlers();
 
-    console.log('[SD] payload raw:', JSON.stringify(payload).substring(0, 300));
+    console.log('[SD] payload raw:', JSON.stringify(payload));
 
     // Delegar toda la lógica de parsing y routing al SDK oficial
     await sdAgent.processRequest(payload);
