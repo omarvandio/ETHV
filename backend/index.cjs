@@ -2131,12 +2131,216 @@ const sdAgent = SUPERDAPP_TOKEN
   : null;
 if (sdAgent) console.log('[SuperDapp] Agente inicializado');
 
+// ── Registrar handlers usando la API oficial del SDK ──────────────────────────
+// Lazy: se llama en el primer webhook porque handleMessage se define más abajo.
+let sdHandlersRegistered = false;
+function sdRegisterHandlers() {
+  if (!sdAgent || sdHandlersRegistered) return;
+  sdHandlersRegistered = true;
+
+  // ── Helpers de UI ─────────────────────────────────────────────────────────
+
+  async function sdSendMainMenu(roomId) {
+    await sdAgent.sendReplyMarkupMessage('buttons', roomId,
+      '¿Qué deseas hacer?', [
+        [
+          { text: '📄 Analizar CV',          callback_data: 'ACTION:ANALYZE_CV' },
+          { text: '🎯 Validar Skill',         callback_data: 'ACTION:START_QUIZ' },
+        ],
+        [
+          { text: '📝 Carta de presentación', callback_data: 'ACTION:COVER_LETTER' },
+          { text: '⚡ Optimizar CV',          callback_data: 'ACTION:OPTIMIZE_CV' },
+        ],
+        [
+          { text: '🆘 Ayuda',                callback_data: 'ACTION:HELP' },
+        ],
+      ]
+    );
+  }
+
+  async function sdSendSkillMenu(roomId, sessionKey) {
+    const sess     = getSdSession(sessionKey);
+    const cvSkills = (sess.cvData?.skills || []).slice(0, 6);
+    const defaults = ['Solidity', 'React', 'Node.js', 'TypeScript', 'Python', 'Smart Contracts'];
+    const skills   = cvSkills.length > 0 ? cvSkills : defaults;
+    const rows     = [];
+    for (let i = 0; i < Math.min(skills.length, 6); i += 2) {
+      const row = [{ text: skills[i], callback_data: 'SKILL:' + skills[i] }];
+      if (skills[i + 1]) row.push({ text: skills[i + 1], callback_data: 'SKILL:' + skills[i + 1] });
+      rows.push(row);
+    }
+    rows.push([{ text: '✏️ Otro (escríbelo)', callback_data: 'SKILL:__CUSTOM__' }]);
+    await sdAgent.sendReplyMarkupMessage('buttons', roomId, '🎯 **¿Qué skill quieres validar?**', rows);
+  }
+
+  // ── /start ────────────────────────────────────────────────────────────────
+  sdAgent.addCommand('/start', async ({ roomId }) => {
+    await sdAgent.sendConnectionMessage(roomId,
+      '¡Bienvenido a **LikeTalent**! 🚀\n\n' +
+      'Soy tu agente de validación de talento Web3.\n' +
+      'Analizo CVs, valido skills y emito certificados on-chain en zkSYS Testnet.'
+    );
+    await sdSendMainMenu(roomId);
+  });
+
+  // ── /menu ─────────────────────────────────────────────────────────────────
+  sdAgent.addCommand('/menu', async ({ roomId }) => {
+    await sdSendMainMenu(roomId);
+  });
+
+  // ── /help ─────────────────────────────────────────────────────────────────
+  sdAgent.addCommand('/help', async ({ roomId }) => {
+    await sdAgent.sendConnectionMessage(roomId,
+      '**LikeTalent — Ayuda** 🆘\n\n' +
+      '📄 **Analizar CV** — Envía el link de tu CV (PDF/DOCX)\n' +
+      '🎯 **Validar Skill** — Quiz de habilidades + certificado on-chain\n' +
+      '📝 **Carta** — Generación automática de carta de presentación\n' +
+      '⚡ **Optimizar CV** — Mejora tu CV para superar filtros ATS\n\n' +
+      'Comandos: /start · /menu · /help\n\n' +
+      'O escribe directamente lo que necesitas.'
+    );
+    await sdSendMainMenu(roomId);
+  });
+
+  // ── message ───────────────────────────────────────────────────────────────
+  sdAgent.addCommand('message', async ({ message, roomId }) => {
+    // Preservar case original desde body.m.body (SDK ya decodificó URL-encoding)
+    const m    = message.body && message.body.m;
+    const text = (typeof m === 'object' && typeof m.body === 'string' ? m.body : message.data) || '';
+    if (!text || (message.rawMessage && message.rawMessage.isBot)) return;
+
+    const isChannel  = message.rawMessage && message.rawMessage.__typename === 'ChannelMessage';
+    const sessionKey = 'sd_' + roomId;
+    const sendFn = async (msg) => {
+      if (isChannel) await sdAgent.sendChannelMessage(roomId, msg);
+      else           await sdAgent.sendConnectionMessage(roomId, msg);
+    };
+    await handleMessage(text, sessionKey, sendFn, 'SuperDapp');
+  });
+
+  // ── callback_query ────────────────────────────────────────────────────────
+  // SDK parsea: callback_data "CMD:value" → message.callback_command="CMD", message.data="value"
+  sdAgent.addCommand('callback_query', async ({ message, roomId }) => {
+    const cmd        = message.callback_command || '';
+    const data       = message.data             || '';
+    const sessionKey = 'sd_' + roomId;
+    const session    = getSdSession(sessionKey);
+
+    const sendFn = async (msg) => {
+      await sdAgent.sendConnectionMessage(roomId, msg);
+    };
+
+    console.log('[SD] callback_query | cmd:', cmd, '| data:', data);
+
+    // ── ACTION: menú principal ─────────────────────────────────────────────
+    if (cmd === 'ACTION') {
+      switch (data) {
+        case 'ANALYZE_CV':
+          await sdAgent.sendConnectionMessage(roomId,
+            '📄 **Analizar CV**\n\n' +
+            'Envía el link de tu CV (Google Drive, Dropbox, URL directa a PDF/DOCX).'
+          );
+          return;
+
+        case 'START_QUIZ':
+          await sdSendSkillMenu(roomId, sessionKey);
+          return;
+
+        case 'COVER_LETTER':
+          if (!session.cvData) {
+            await sdAgent.sendConnectionMessage(roomId,
+              '📝 Primero necesito analizar tu CV.\n\nEnvía el link de tu CV para comenzar.'
+            );
+          } else {
+            await sdAgent.sendConnectionMessage(roomId,
+              '📝 **Carta de presentación**\n\n' +
+              'Escribe el puesto y empresa. Ejemplo:\n"carta para Developer en Empresa XYZ"'
+            );
+          }
+          return;
+
+        case 'OPTIMIZE_CV':
+          if (!session.cvData) {
+            await sdAgent.sendConnectionMessage(roomId,
+              '⚡ Primero necesito analizar tu CV.\n\nEnvía el link de tu CV para comenzar.'
+            );
+          } else {
+            await sdAgent.sendReplyMarkupMessage('buttons', roomId,
+              '⚡ **Optimizar CV** — ¿En qué idioma?', [
+                [
+                  { text: '🇪🇸 Español', callback_data: 'OPTIMIZE:es' },
+                  { text: '🇺🇸 English', callback_data: 'OPTIMIZE:en' },
+                ],
+              ]
+            );
+          }
+          return;
+
+        case 'HELP':
+          await sdAgent.sendConnectionMessage(roomId,
+            '**LikeTalent — Ayuda** 🆘\n\n' +
+            '📄 **Analizar CV** — Envía el link de tu CV (PDF/DOCX)\n' +
+            '🎯 **Validar Skill** — Quiz de habilidades + certificado\n' +
+            '📝 **Carta** — Carta de presentación automática\n' +
+            '⚡ **Optimizar CV** — Mejora para filtros ATS\n\n' +
+            'Comandos: /start · /menu · /help'
+          );
+          await sdSendMainMenu(roomId);
+          return;
+      }
+    }
+
+    // ── SKILL: selección de skill para quiz ───────────────────────────────
+    if (cmd === 'SKILL') {
+      if (data === '__CUSTOM__') {
+        session.pendingQuizIntent = true;
+        await sdAgent.sendConnectionMessage(roomId,
+          '✏️ Escribe el nombre del skill que quieres validar:'
+        );
+      } else {
+        // Guardar skill en sesión → mostrar menú de nivel
+        session.pendingSkill = data;
+        await sdAgent.sendReplyMarkupMessage('buttons', roomId,
+          '🎯 Skill: **' + data + '** — ¿Qué nivel quieres evaluar?', [
+            [
+              { text: '🟢 Junior', callback_data: 'LEVEL:junior' },
+              { text: '🟡 Mid',    callback_data: 'LEVEL:mid'    },
+              { text: '🔴 Senior', callback_data: 'LEVEL:senior' },
+            ],
+          ]
+        );
+      }
+      return;
+    }
+
+    // ── LEVEL: nivel del quiz ─────────────────────────────────────────────
+    if (cmd === 'LEVEL') {
+      // data = 'junior' | 'mid' | 'senior'
+      // skill guardado en session.pendingSkill por el callback SKILL anterior
+      const skill = session.pendingSkill || 'Solidity';
+      session.pendingSkill = null;
+      await sendFn('Iniciando quiz de **' + skill + '** — nivel ' + data + '...');
+      await handleMessage('validar ' + skill + ' ' + data, sessionKey, sendFn, 'SuperDapp');
+      return;
+    }
+
+    // ── OPTIMIZE: idioma de optimización ─────────────────────────────────
+    if (cmd === 'OPTIMIZE') {
+      const lang = data === 'en' ? 'inglés' : 'español';
+      await handleMessage('optimizar cv en ' + lang, sessionKey, sendFn, 'SuperDapp');
+      return;
+    }
+  });
+
+  console.log('[SuperDapp] Handlers registrados: /start /menu /help + message + callback_query');
+}
+
 // ── Sesiones ──────────────────────────────────────────────────────────────────
 const sdSessions = new Map();
 
 function getSdSession(roomId) {
   if (!sdSessions.has(roomId)) {
-    sdSessions.set(roomId, { cvData: null, userData: null, history: [], quizState: null, pendingCertificate: null, pendingQuiz: null, pendingQuizIntent: false, collectingUserData: null, lastActivity: Date.now() });
+    sdSessions.set(roomId, { cvData: null, userData: null, history: [], quizState: null, pendingCertificate: null, pendingQuiz: null, pendingQuizIntent: false, pendingSkill: null, collectingUserData: null, lastActivity: Date.now() });
   }
   const s = sdSessions.get(roomId);
   s.lastActivity = Date.now();
@@ -2519,13 +2723,8 @@ Responde en español, breve y útil.`;
   return 'No pude completar la acción. Intenta de nuevo.';
 }
 
-function sdExtractText(payload) {
-  try {
-    const p = JSON.parse(payload.body);
-    const i = JSON.parse(decodeURIComponent(p.m));
-    return typeof i.body === 'string' ? i.body.trim() : '';
-  } catch(e) { return ''; }
-}
+// sdExtractText eliminado — el SDK (@superdapp/agents) decodifica el payload
+// internamente via processRequest / parseMessage.
 
 function sdIsWallet(text) {
   return /^0x[a-fA-F0-9]{40}$/.test(text.trim());
@@ -2837,28 +3036,23 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
 }
 
 // ── SuperDapp Webhook ─────────────────────────────────────────────────────────
+// Usa agent.processRequest(body) según la documentación oficial del SDK:
+// https://github.com/SuperDappAI/superdapp-js/blob/master/docs/README.md
 app.post('/webhook', async function(req, res) {
   res.status(200).send('OK');
   if (!sdAgent) return;
   try {
-    const payload   = req.body;
+    const payload = req.body;
+    // Responder al challenge de verificación de SuperDapp
     if (payload && payload.challenge) return;
 
-    const text      = sdExtractText(payload);
-    const isBot     = payload && payload.isBot;
-    const isChannel = payload && payload.__typename === 'ChannelMessage';
-    const roomId    = payload && payload.roomId;
-    const chatId    = payload && payload.chatId;
+    // Registrar los handlers la primera vez que llega un mensaje
+    sdRegisterHandlers();
 
     console.log('[SD] payload raw:', JSON.stringify(payload).substring(0, 300));
-    if (!text || isBot) return;
 
-    const sendFn = async (msg) => {
-      if (isChannel) await sdAgent.sendChannelMessage(roomId, msg);
-      else await sdAgent.sendConnectionMessage(chatId || roomId, msg);
-    };
-
-    await handleMessage(text, 'sd_' + roomId, sendFn, 'SuperDapp');
+    // Delegar toda la lógica de parsing y routing al SDK oficial
+    await sdAgent.processRequest(payload);
   } catch(e) {
     console.error('[SD] Webhook error:', e.message);
   }
