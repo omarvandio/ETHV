@@ -2144,6 +2144,22 @@ if (sdAgent) {
     return '';
   };
   console.log('[SuperDapp] getRoomId patch aplicado (soporte canales/supergrupos)');
+
+  // Fix 2: formatBody del dist siempre usa t:'chat'. Para canales/supergrupos
+  // debe ser t:'channel' — el frontend usa ese campo para el push en tiempo real
+  // (WebSocket). Sin este fix los mensajes llegan pero no se muestran hasta F5.
+  const proto = Object.getPrototypeOf(sdAgent);
+  const origSendChannel = proto.sendChannelMessage;
+  proto.sendChannelMessage = async function(channelId, message, options) {
+    const msgObj    = { body: message };
+    const jsonStr   = JSON.stringify(msgObj);
+    const msgBody   = { body: JSON.stringify({ m: encodeURIComponent(jsonStr), t: 'channel' }) };
+    return this.client.sendChannelMessage(channelId, {
+      message: msgBody,
+      isSilent: options?.isSilent || false,
+    });
+  };
+  console.log('[SuperDapp] sendChannelMessage patch aplicado (t:channel para tiempo real)');
 }
 
 // ── Registrar handlers usando la API oficial del SDK ──────────────────────────
