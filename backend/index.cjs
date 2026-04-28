@@ -37,6 +37,19 @@ setInterval(() => {
 const app = express();
 const PORT = process.env.PORT || 3003;
 
+// Auto-detecta la URL base pública en el primer request (funciona en cualquier hosting)
+let _detectedBaseUrl = null;
+function getBaseUrl() {
+  return _detectedBaseUrl || BACKEND_URL;
+}
+app.use((req, res, next) => {
+  if (!_detectedBaseUrl) {
+    const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+    _detectedBaseUrl = `${proto}://${req.headers.host}`;
+  }
+  next();
+});
+
 const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
   'http://localhost:3000',
@@ -215,6 +228,44 @@ swaggerSpec.paths = {
       responses: {
         200: { description: 'OK — el agente procesa el mensaje de forma asíncrona' },
       },
+    },
+  },
+  '/api/download': {
+    post: {
+      tags: ['Descargas'],
+      summary: 'Descargar CV u certificado',
+      description: 'Descarga un archivo (CV .docx o certificado .pdf) usando el código recibido por chat/bot. El DNI del usuario es la contraseña si el archivo está protegido.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['code'],
+              properties: {
+                code: { type: 'string', example: 'A3F9K2BM', description: 'Código de 8 caracteres recibido por el bot/chat' },
+                dni: { type: 'string', example: '12345678', description: 'DNI/cédula del usuario (requerido si el archivo está protegido)' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Archivo descargado (.docx o .pdf)' },
+        401: { description: 'DNI requerido' },
+        403: { description: 'DNI incorrecto' },
+        404: { description: 'Código no encontrado' },
+        410: { description: 'Código expirado' },
+      },
+    },
+  },
+  '/api/download-info/{code}': {
+    get: {
+      tags: ['Descargas'],
+      summary: 'Info del archivo por código',
+      description: 'Retorna tipo, nombre y si requiere DNI, sin descargar el archivo.',
+      parameters: [{ name: 'code', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: { 200: { description: 'Metadata del archivo' }, 404: { description: 'Código no encontrado' } },
     },
   },
   '/v1/chat/completions': {
@@ -593,6 +644,53 @@ async function sbInsert(table, payload) {
     console.error(`[Supabase] ${table} exception:`, err.message);
     return { success: false, error: err.message };
   }
+}
+
+async function sbFetch(table, filters) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || SUPABASE_KEY === 'your_supabase_key_here') return null;
+  const qs = Object.entries(filters).map(([k, v]) => `${k}=eq.${encodeURIComponent(v)}`).join('&');
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${qs}&limit=1`, {
+      headers: { ...sbHeaders(), 'Prefer': 'return=representation' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data) ? (data[0] || null) : null;
+  } catch (err) {
+    console.error(`[Supabase] ${table} fetch error:`, err.message);
+    return null;
+  }
+}
+
+// ── Download helpers ──────────────────────────────────────────────────────────
+
+function generateDownloadCode() {
+  // 8 chars sin letras ambiguas (0/O, 1/I/L)
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  return Array.from({ length: 8 }, () => chars[crypto.randomInt(chars.length)]).join('');
+}
+
+function hashDNI(dni) {
+  return crypto.createHash('sha256').update(String(dni).trim().toUpperCase()).digest('hex');
+}
+
+async function saveDownload({ type, fileBase64, filename, dni }) {
+  const code = generateDownloadCode();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 días
+  const result = await sbInsert('downloads', {
+    code,
+    type,
+    file_base64: fileBase64,
+    filename: filename || (type === 'cv' ? 'CV_ATS_Optimizado.docx' : 'Certificado_LikeTalent.pdf'),
+    dni_hash: dni ? hashDNI(dni) : null,
+    expires_at: expiresAt,
+  });
+  if (result.success) {
+    console.log(`[Download] Guardado en Supabase | code: ${code} | type: ${type} | dni_protegido: ${!!dni}`);
+  } else {
+    console.warn('[Download] No se pudo guardar en Supabase (¿tabla downloads creada?):', result.error || result.reason);
+  }
+  return code;
 }
 
 // Guardar análisis de CV
@@ -1812,8 +1910,8 @@ const PDFDocument = require('pdfkit');
 const { ethers }  = require('ethers');
 const { Wallet, Provider } = require('zksync-ethers');
 
-const ZKSYS_RPC        = 'https://rpc-zk.tanenbaum.io/';
-const CONTRACT_ADDRESS = '0x8786996dA2Ed941FA4a0Aa7F0226fe50976C1539';
+const ZKSYS_RPC        = process.env.ZKSYS_RPC_URL       || 'https://rpc-zk.tanenbaum.io/';
+const CONTRACT_ADDRESS = process.env.ZKSYS_CONTRACT_ADDRESS || '0x8786996dA2Ed941FA4a0Aa7F0226fe50976C1539';
 const CONTRACT_ABI     = [
   'function mintCertificate(address to, string skillName, uint8 score, string level, string uri, bytes32 cvHash) external returns (uint256)',
   'function totalCertificates() external view returns (uint256)'
@@ -2118,7 +2216,7 @@ const SUPERDAPP_TOKEN = process.env.SUPERDAPP_TOKEN  || '';
 const MINTER_KEY      = process.env.ZKSYS_PRIVATE_KEY || process.env.PRIVATE_KEY || '';
 const PASS_SCORE      = 70;
 const MAX_TOOL_ROUNDS = 5;
-const EXPLORER_URL    = 'https://explorer-zk.tanenbaum.io';
+const EXPLORER_URL    = process.env.ZKSYS_EXPLORER_URL   || 'https://explorer-zk.tanenbaum.io';
 
 console.log('[SuperDapp] TOKEN:',   SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
 console.log('[SuperDapp] GROQ:',    GROQ_API_KEY    ? 'OK — tool calling activo' : 'FALTA — usando MiniMax como fallback');
@@ -2402,10 +2500,14 @@ const SD_TOOLS = [
     type: 'function',
     function: {
       name: 'optimize_cv',
-      description: 'Genera un CV optimizado para ATS basado en el CV previamente analizado.',
+      description: 'Genera un CV optimizado para ATS y crea un enlace de descarga protegido. IMPORTANTE: antes de llamar esta función, pide al usuario su número de DNI/cédula para proteger la descarga.',
       parameters: {
         type: 'object',
-        properties: { lang: { type: 'string', enum: ['es', 'en'] } }
+        properties: {
+          lang: { type: 'string', enum: ['es', 'en'] },
+          dni: { type: 'string', description: 'Número de DNI, cédula o documento de identidad del usuario (requerido para proteger el archivo)' }
+        },
+        required: ['dni']
       }
     }
   },
@@ -2502,7 +2604,7 @@ async function sdMintOnChain(walletAddress, skill, score, level, cvData) {
   const metadata = {
     name:        'LikeTalent Skill Certificate — ' + skill,
     description: 'Certificado validado por IA. Skill: ' + skill + ' | Score: ' + score + '/100 | Nivel: ' + level,
-    image:       'https://ethv-1.onrender.com/certificate-badge.png',
+    image:       process.env.CERTIFICATE_BADGE_URL || `${BACKEND_URL}/certificate-badge.png`,
     attributes: [
       { trait_type: 'Skill',    value: skill },
       { trait_type: 'Score',    value: score },
@@ -2580,7 +2682,24 @@ async function sdExecuteTool(toolName, args, session) {
   if (toolName === 'optimize_cv') {
     if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
     const result = await sdCallBackend('/api/improve-cv', { cvData: session.cvData, lang: args.lang || 'es' });
-    return JSON.stringify({ ats_score: result.ats_score, professional_summary: result.professional_summary || result.summary });
+    // Generar DOCX y guardar en Supabase con código de descarga
+    let downloadCode = null;
+    const dni = args.dni || session.userData?.id || null;
+    try {
+      const docxRes = await axios.post('http://localhost:' + PORT + '/api/download-cv-docx',
+        { cvData: session.cvData, improved: result },
+        { timeout: 90000, responseType: 'arraybuffer' }
+      );
+      const fileBase64 = Buffer.from(docxRes.data).toString('base64');
+      downloadCode = await saveDownload({ type: 'cv', fileBase64, filename: 'CV_ATS_Optimizado.docx', dni });
+    } catch (e) {
+      console.error('[optimize_cv] Error guardando descarga:', e.message);
+    }
+    return JSON.stringify({
+      ats_score: result.ats_score,
+      professional_summary: result.professional_summary || result.summary,
+      download_code: downloadCode,
+    });
   }
 
   if (toolName === 'generate_cover_letter') {
@@ -2891,7 +3010,31 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
             contentHash: null, explorerUrl: null
           });
           console.log('[QUIZ] PDF generado | tamaño:', pdfBuffer.length, 'bytes');
-          await sendFn('🎓 Tu certificado está listo:', { buffer: pdfBuffer, name: `certificado-${savedQuiz.skill.replace(/\s+/g,'-')}.pdf` });
+          // Guardar certificado en Supabase y enviar código de descarga
+          const certDni = session.userData?.id || null;
+          let certCode = null;
+          try {
+            certCode = await saveDownload({
+              type: 'cert',
+              fileBase64: pdfBuffer.toString('base64'),
+              filename: `certificado-${savedQuiz.skill.replace(/\s+/g, '-')}.pdf`,
+              dni: certDni,
+            });
+          } catch(saveErr) {
+            console.error('[QUIZ] Error guardando certificado en Supabase:', saveErr.message);
+          }
+          if (certCode) {
+            if (certDni) {
+              // Con DNI: requiere POST, enviar código + instrucciones
+              await sendFn(`🎓 ¡Tu certificado está listo!\n\n📥 Código: \`${certCode}\`\n🔐 Contraseña: tu número de documento (${certDni.slice(0,3)}***)\n\nDescárgalo en: ${getBaseUrl()}/api/download\n_(válido por 7 días)_`);
+            } else {
+              // Sin DNI: link directo clickeable
+              await sendFn(`🎓 ¡Tu certificado está listo!\n\n👇 Descarga directa (válido 7 días):\n${getBaseUrl()}/api/download/${certCode}`);
+            }
+          } else {
+            // Fallback: enviar adjunto si Supabase no está configurado
+            await sendFn('🎓 Tu certificado está listo:', { buffer: pdfBuffer, name: `certificado-${savedQuiz.skill.replace(/\s+/g,'-')}.pdf` });
+          }
         } catch(e) {
           console.error('[QUIZ] Error generando PDF:', e.message, e.stack?.split('\n')[1]);
           await sendFn('Hubo un error generando el PDF. Contacta al soporte.');
@@ -3048,7 +3191,7 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
         const data = JSON.parse(result);
         const reply = data.error
           ? data.error
-          : `**CV Optimizado** ✅\n\nATS Score: **${data.ats_score || 'N/A'}**\n\n${data.professional_summary || ''}`;
+          : `**CV Optimizado** ✅\n\nATS Score: **${data.ats_score || 'N/A'}**\n\n${data.professional_summary || ''}${data.download_code ? `\n\n📥 **Código de descarga:** \`${data.download_code}\`\n🔐 Contraseña: tu DNI/cédula\n_(válido 7 días — descarga en ${BACKEND_URL}/api/download)_` : ''}`;
         session.history.push({ role: 'user', content: text });
         session.history.push({ role: 'assistant', content: reply });
         await sendFn(reply);
@@ -3154,7 +3297,7 @@ app.post('/telegram', async function(req, res) {
 // Endpoint para registrar el webhook de Telegram automáticamente
 app.get('/telegram/setup', async function(req, res) {
   if (!TELEGRAM_TOKEN) return res.json({ error: 'TELEGRAM_BOT_TOKEN no configurado' });
-  const webhookUrl = (process.env.BACKEND_URL || 'https://ethv.onrender.com') + '/telegram';
+  const webhookUrl = BACKEND_URL + '/telegram';
   try {
     const r = await axios.post('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/setWebhook', { url: webhookUrl });
     res.json({ ok: true, webhookUrl, result: r.data });
@@ -3263,6 +3406,87 @@ if (DISCORD_TOKEN) {
 } else {
   console.log('[Discord] DISCORD_TOKEN no configurado');
 }
+
+// ============================================
+// DESCARGA DE ARCHIVOS — código + DNI
+// ============================================
+
+// GET /api/download-info/:code — devuelve metadata del archivo (sin el archivo)
+app.get('/api/download-info/:code', async (req, res) => {
+  const code = req.params.code?.trim().toUpperCase();
+  if (!code) return res.status(400).json({ error: 'Código requerido' });
+  const entry = await sbFetch('downloads', { code });
+  if (!entry) return res.status(404).json({ error: 'Código no encontrado' });
+  if (new Date(entry.expires_at) < new Date()) return res.status(410).json({ error: 'Código expirado' });
+  res.json({
+    type: entry.type,
+    filename: entry.filename,
+    requires_dni: !!entry.dni_hash,
+    expires_at: entry.expires_at,
+  });
+});
+
+// POST /api/download — descarga el archivo con código + DNI
+app.post('/api/download', async (req, res) => {
+  const { code, dni } = req.body;
+  if (!code) return res.status(400).json({ error: 'El código de descarga es requerido' });
+
+  const entry = await sbFetch('downloads', { code: code.trim().toUpperCase() });
+  if (!entry) return res.status(404).json({ error: 'Código no encontrado o ya utilizado' });
+
+  if (new Date(entry.expires_at) < new Date()) {
+    return res.status(410).json({ error: 'El código ha expirado (válido 7 días)' });
+  }
+
+  // Validar DNI si el archivo tiene protección
+  if (entry.dni_hash) {
+    if (!dni) return res.status(401).json({ error: 'Se requiere el DNI para descargar este archivo' });
+    if (hashDNI(dni) !== entry.dni_hash) {
+      return res.status(403).json({ error: 'DNI incorrecto' });
+    }
+  }
+
+  const fileBuffer = Buffer.from(entry.file_base64, 'base64');
+  const isDocx = entry.filename?.endsWith('.docx');
+  const contentType = isDocx
+    ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    : 'application/pdf';
+
+  res.setHeader('Content-Disposition', `attachment; filename="${entry.filename || 'descarga'}"`);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', fileBuffer.length);
+  console.log(`[Download] Descargado | code: ${code} | type: ${entry.type} | size: ${fileBuffer.length} bytes`);
+  res.send(fileBuffer);
+});
+
+// GET /api/download/:code — link directo para SuperDapp (sin DNI, solo certs no protegidos)
+app.get('/api/download/:code', async (req, res) => {
+  const code = req.params.code?.trim().toUpperCase();
+  if (!code) return res.status(400).json({ error: 'Código requerido' });
+
+  const entry = await sbFetch('downloads', { code });
+  if (!entry) return res.status(404).send('Código no encontrado o expirado.');
+
+  if (new Date(entry.expires_at) < new Date()) {
+    return res.status(410).send('Este link ha expirado.');
+  }
+
+  if (entry.dni_hash) {
+    return res.status(403).send('Este archivo requiere contraseña. Usa POST /api/download con tu DNI.');
+  }
+
+  const fileBuffer = Buffer.from(entry.file_base64, 'base64');
+  const isDocx = entry.filename?.endsWith('.docx');
+  const contentType = isDocx
+    ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    : 'application/pdf';
+
+  res.setHeader('Content-Disposition', `attachment; filename="${entry.filename || 'certificado.pdf'}"`);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', fileBuffer.length);
+  console.log(`[Download-GET] Descargado | code: ${code} | type: ${entry.type} | size: ${fileBuffer.length} bytes`);
+  res.send(fileBuffer);
+});
 
 app.listen(PORT, () => {
   console.log('LikeTalent Backend running on http://localhost:' + PORT);
