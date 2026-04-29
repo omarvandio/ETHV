@@ -2069,9 +2069,10 @@ async function buildCertificatePDF({ skill, score, level, wallet, issuedAt, cont
     doc.fillColor('#a1a1aa').fontSize(12).font('Helvetica')
        .text('This certifies that the holder', 60, midY, { width: textW });
 
-    // Verify transaction label + URL (clickable)
+    // Verify label + URL (clickable) — diferente texto si es tx real o solo contrato
+    const verifyLabel = explorerUrl ? 'Verify transaction on-chain' : 'Verify smart contract';
     doc.fillColor('#10b981').fontSize(8.5).font('Helvetica-Bold')
-       .text('Verify transaction', 60, midY + 22, { width: textW });
+       .text(verifyLabel, 60, midY + 22, { width: textW });
 
     doc.fillColor('#10b981').fontSize(7.5).font('Helvetica')
        .text(verifyUrl, 60, midY + 36, {
@@ -2247,6 +2248,9 @@ console.log('[SuperDapp] TOKEN:',   SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
 console.log('[SuperDapp] GROQ:',    GROQ_API_KEY    ? 'OK — tool calling activo' : 'FALTA — usando MiniMax como fallback');
 console.log('[SuperDapp] DISCORD:', process.env.DISCORD_TOKEN ? 'OK' : 'FALTA');
 console.log('[SuperDapp] TELEGRAM:', process.env.TELEGRAM_BOT_TOKEN ? 'OK' : 'FALTA');
+console.log('[Blockchain] MINTER_KEY:', MINTER_KEY ? 'OK — mint on-chain activo' : 'FALTA — los certificados se generan sin tx on-chain');
+console.log('[Blockchain] CONTRACT:', CONTRACT_ADDRESS);
+console.log('[Blockchain] RPC:', ZKSYS_RPC);
 
 const { SuperDappAgent } = require('@superdapp/agents');
 const sdAgent = SUPERDAPP_TOKEN
