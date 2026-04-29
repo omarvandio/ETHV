@@ -2922,20 +2922,58 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
     const skill  = skills[Math.floor(Math.random() * skills.length)];
     const level  = levels[Math.floor(Math.random() * levels.length)];
     const score  = Math.floor(Math.random() * 30) + 70; // 70-100
-    await sendFn(`Generando certificado de prueba: **${skill}** — ${level} (${score}/100)...`);
+    const issuedAt = new Date().toISOString();
+    await sendFn(`⏳ Generando certificado de prueba: **${skill}** — ${level} (${score}/100)...`);
     try {
-      console.log('[TEST-CERT] Generando PDF | skill:', skill, '| level:', level, '| score:', score);
-      const pdfBuffer = await buildCertificatePDF({
-        skill, score, level,
-        wallet: 'LikeTalent-Test',
-        issuedAt: new Date().toISOString(),
-        contentHash: null, explorerUrl: null
+      let explorerUrl = null;
+      let txHash = null;
+      let tokenId = null;
+
+      // Mint on-chain con wallet del .env si está configurado
+      if (MINTER_KEY) {
+        try {
+          const provider = new Provider(ZKSYS_RPC);
+          const signer   = new Wallet(MINTER_KEY, provider);
+          const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+          const cvHash   = ethers.keccak256(ethers.toUtf8Bytes('LikeTalent-Test:' + skill));
+          const tokenURI = `data:application/json;base64,${Buffer.from(JSON.stringify({
+            name: `${skill} Certificate (Test)`,
+            description: `Test certificate — ${skill} | Score: ${score}% | Level: ${level}`,
+            attributes: [{ trait_type: 'Skill', value: skill }, { trait_type: 'Score', value: score }, { trait_type: 'Level', value: level }]
+          })).toString('base64')}`;
+          const tx      = await contract.mintCertificate(signer.address, skill, score, level, tokenURI, cvHash);
+          const receipt = await tx.wait();
+          txHash      = receipt.hash;
+          explorerUrl = `${EXPLORER_URL}/tx/${txHash}`;
+          for (const log of (receipt.logs || [])) {
+            try { const p = contract.interface.parseLog(log); if (p?.name === 'CertificateMinted') { tokenId = p.args.tokenId.toString(); break; } } catch(_) {}
+          }
+          if (!tokenId) { try { tokenId = (Number(await contract.totalCertificates()) - 1).toString(); } catch(_) {} }
+          console.log(`[TEST-CERT] Mint OK | tokenId=${tokenId} | tx=${txHash}`);
+        } catch(mintErr) {
+          console.error('[TEST-CERT] Mint error:', mintErr.message);
+        }
+      }
+
+      const contentHash = crypto.createHash('sha256').update(`LikeTalent-Test:${skill}:${level}:${score}:${issuedAt}`).digest('hex');
+      const pdfBuffer = await buildCertificatePDF({ skill, score, level, wallet: 'LikeTalent-Test', issuedAt, contentHash, explorerUrl });
+      console.log('[TEST-CERT] PDF generado | tamaño:', pdfBuffer.length, 'bytes | tx:', txHash || 'sin tx');
+
+      const certCode = await saveDownload({
+        type: 'cert',
+        fileBase64: pdfBuffer.toString('base64'),
+        filename: `test-certificado-${skill.replace(/\s+/g, '-')}.pdf`,
+        dni: null,
       });
-      console.log('[TEST-CERT] PDF generado | tamaño:', pdfBuffer.length, 'bytes');
-      await sendFn('🎓 Certificado de prueba generado:', { buffer: pdfBuffer, name: `test-certificado-${skill.replace(/\s+/g,'-')}.pdf` });
+
+      let reply = `🎓 Certificado de prueba listo!\n\nSkill: **${skill}** | Score: **${score}/100** — ${level}`;
+      if (txHash) reply += `\n🔗 Tx: ${explorerUrl}`;
+      if (tokenId) reply += `\n🪙 Token ID: #${tokenId}`;
+      reply += `\n\n👇 Descarga (válido 7 días):\n${getBaseUrl()}/api/download/${certCode}`;
+      await sendFn(reply);
     } catch(e) {
       console.error('[TEST-CERT] Error:', e.message, e.stack);
-      await sendFn('Error generando certificado: ' + e.message);
+      await sendFn('Error generando certificado de prueba: ' + e.message);
     }
     return;
   }
@@ -3023,49 +3061,92 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
       if (passed) {
         msg += '\n✅ Aprobaste!';
         await sendFn(msg);
-        // Generar PDF automáticamente
+
+        const skill    = savedQuiz.skill;
+        const score    = result.score;
+        const holderName = session.cvData?.name || session.userData?.name || 'Participante';
+        const holderId   = session.userData?.id || null;
+        const issuedAt   = new Date().toISOString();
+
+        let explorerUrl = null;
+        let txHash      = null;
+        let tokenId     = null;
+
+        // Mint automático con la wallet del .env (no requiere wallet del usuario)
+        if (MINTER_KEY) {
+          try {
+            await sendFn('⛓️ Emitiendo certificado en blockchain...');
+            const provider  = new Provider(ZKSYS_RPC);
+            const signer    = new Wallet(MINTER_KEY, provider);
+            const contract  = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+            const cvHash    = session.cvData?.name
+              ? ethers.keccak256(ethers.toUtf8Bytes(session.cvData.name + (session.cvData.skills || []).join(',')))
+              : ethers.keccak256(ethers.toUtf8Bytes(holderName + skill));
+            const tokenURI  = `data:application/json;base64,${Buffer.from(JSON.stringify({
+              name: `${skill} Certificate`,
+              description: `Validated skill certificate for ${skill} — score ${score}% (${level})`,
+              attributes: [
+                { trait_type: 'Skill', value: skill },
+                { trait_type: 'Score', value: score },
+                { trait_type: 'Level', value: level },
+              ]
+            })).toString('base64')}`;
+
+            const tx      = await contract.mintCertificate(signer.address, skill, score, level, tokenURI, cvHash);
+            const receipt = await tx.wait();
+            txHash      = receipt.hash;
+            explorerUrl = `${EXPLORER_URL}/tx/${txHash}`;
+
+            // Intentar leer tokenId del evento
+            for (const log of (receipt.logs || [])) {
+              try {
+                const parsed = contract.interface.parseLog(log);
+                if (parsed?.name === 'CertificateMinted') { tokenId = parsed.args.tokenId.toString(); break; }
+              } catch(_) {}
+            }
+            if (!tokenId) {
+              try { tokenId = (Number(await contract.totalCertificates()) - 1).toString(); } catch(_) {}
+            }
+            console.log(`[QUIZ] Mint OK | tokenId=${tokenId} | tx=${txHash}`);
+          } catch(mintErr) {
+            console.error('[QUIZ] Mint error:', mintErr.message);
+            // Continuar sin tx — el PDF se genera igual
+          }
+        }
+
+        // Generar PDF con la URL real de la tx (o sin ella si mint falló)
         try {
           console.log('[QUIZ] Generando PDF certificado...');
-          const holderName = session.cvData?.name || session.userData?.name || 'Participante';
-          const holderId   = session.userData?.id || null;
+          const contentHash = crypto.createHash('sha256')
+            .update(`${holderName}:${skill}:${level}:${score}:${issuedAt}`)
+            .digest('hex');
           const pdfBuffer = await buildCertificatePDF({
-            skill: savedQuiz.skill, score: result.score, level,
-            wallet: holderId ? `ID: ${holderId}` : holderName,
-            issuedAt: new Date().toISOString(),
-            contentHash: null, explorerUrl: null
+            skill, score, level,
+            wallet: holderName,
+            issuedAt,
+            contentHash,
+            explorerUrl,
           });
-          console.log('[QUIZ] PDF generado | tamaño:', pdfBuffer.length, 'bytes');
-          // Guardar certificado en Supabase y enviar código de descarga
-          const certDni = session.userData?.id || null;
-          let certCode = null;
-          try {
-            certCode = await saveDownload({
-              type: 'cert',
-              fileBase64: pdfBuffer.toString('base64'),
-              filename: `certificado-${savedQuiz.skill.replace(/\s+/g, '-')}.pdf`,
-              dni: certDni,
-            });
-          } catch(saveErr) {
-            console.error('[QUIZ] Error guardando certificado en Supabase:', saveErr.message);
-          }
-          if (certCode) {
-            if (certDni) {
-              // Con DNI: requiere POST, enviar código + instrucciones
-              await sendFn(`🎓 ¡Tu certificado está listo!\n\n📥 Código: \`${certCode}\`\n🔐 Contraseña: tu número de documento (${certDni.slice(0,3)}***)\n\nDescárgalo en: ${getBaseUrl()}/api/download\n_(válido por 7 días)_`);
-            } else {
-              // Sin DNI: link directo clickeable
-              await sendFn(`🎓 ¡Tu certificado está listo!\n\n👇 Descarga directa (válido 7 días):\n${getBaseUrl()}/api/download/${certCode}`);
-            }
-          } else {
-            // Fallback: enviar adjunto si Supabase no está configurado
-            await sendFn('🎓 Tu certificado está listo:', { buffer: pdfBuffer, name: `certificado-${savedQuiz.skill.replace(/\s+/g,'-')}.pdf` });
-          }
-        } catch(e) {
-          console.error('[QUIZ] Error generando PDF:', e.message, e.stack?.split('\n')[1]);
+          console.log('[QUIZ] PDF generado | tamaño:', pdfBuffer.length, 'bytes | tx:', txHash || 'sin tx');
+
+          const certCode = await saveDownload({
+            type: 'cert',
+            fileBase64: pdfBuffer.toString('base64'),
+            filename: `certificado-${skill.replace(/\s+/g, '-')}.pdf`,
+            dni: holderId,
+          });
+
+          let certMsg = `🎓 ¡Certificado emitido!\n\nSkill: **${skill}** | Score: **${score}/100** — ${level}`;
+          if (txHash) certMsg += `\n🔗 Tx: ${explorerUrl}`;
+          if (tokenId) certMsg += `\n🪙 Token ID: #${tokenId}`;
+          certMsg += `\n\n👇 Descarga tu certificado (válido 7 días):\n${getBaseUrl()}/api/download/${certCode}`;
+
+          await sendFn(certMsg);
+        } catch(pdfErr) {
+          console.error('[QUIZ] Error generando PDF:', pdfErr.message);
           await sendFn('Hubo un error generando el PDF. Contacta al soporte.');
         }
-        // Guardar para mint opcional pero NO mencionarlo — solo si el usuario manda 0x
-        session.pendingCertificate = { skill: savedQuiz.skill, score: result.score, level };
+        session.pendingCertificate = null;
         return;
       } else {
         msg += '\n\nNecesitas ' + PASS_SCORE + '/100 para aprobar. Puedes intentarlo de nuevo.';
@@ -3075,25 +3156,8 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
     return;
   }
 
-  // 2. Certificado pendiente
-  if (session.pendingCertificate && !sdIsWallet(text)) {
-    // No es wallet — limpiar y dejar que el agente responda normalmente
-    session.pendingCertificate = null;
-  }
-  if (session.pendingCertificate && sdIsWallet(text)) {
-    const cert = { ...session.pendingCertificate };
-    session.pendingCertificate = null;
-    await sendFn('Emitiendo certificado en blockchain... puede tardar 15-30 segundos.');
-    try {
-      const result = await sdMintOnChain(text.trim(), cert.skill, cert.score, cert.level, session.cvData);
-      await sendFn('Certificado emitido en zkSYS Testnet!\n\nSkill: ' + cert.skill + '\nScore: ' + cert.score + '/100 — ' + cert.level +
-        '\nToken ID: #' + result.tokenId + '\nTx: ' + result.explorerTx + '\n\nTu certificado es Soulbound (no transferible).');
-    } catch(e) {
-      console.error('[' + platform + '] Mint error:', e.message);
-      await sendFn('Error al emitir certificado. Intenta de nuevo más tarde.');
-    }
-    return;
-  }
+  // 2. Certificado pendiente (ya no se usa en flujo normal — el mint es automático)
+  if (session.pendingCertificate) session.pendingCertificate = null;
 
   // 3. Detección de intención del agente — ejecutar herramientas directamente sin depender del LLM
   const lower = text.toLowerCase();
