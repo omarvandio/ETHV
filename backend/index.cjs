@@ -3100,7 +3100,8 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
 
   // 3a. Quiz / validar skill: el agente inicia el quiz real con herramienta
   const quizGeneric = ['un skill', 'una skill', 'skill', 'skil', 'skills', 'una habilidad', 'un conocimiento',
-    'mis skills', 'mis habilidades', 'habilidad', 'conocimiento', 'algo', 'cualquiera', 'lo que sea'];
+    'mis skills', 'mis habilidades', 'habilidad', 'habilidades', 'conocimiento', 'algo', 'cualquiera', 'lo que sea',
+    'una competencia', 'competencia', 'competencias', 'aptitud', 'aptitudes'];
   const quizMatch = lower.match(/(?:validar|quiz|evaluar|certificar|examen|test)\s+(?:de\s+|en\s+|mi\s+|un\s+|una\s+)?([\w\s.#+áéíóúñ��]+)/i);
   // También capturar "validar" o "quiero validar" sin skill especificado
   const quizBare = !quizMatch && /^(?:validar|quiz|evaluar|certificar|examen|quiero\s+validar|hacer\s+quiz)\s*$/i.test(lower.trim());
@@ -3146,15 +3147,16 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
   }
 
   // 3a-bis. Respuesta pendiente de quiz: el usuario indica el skill después de que se le preguntó
+  const saludos = ['hola', 'hi', 'hey', 'buenas', 'buenos días', 'buenas tardes', 'buenas noches', 'ola', 'holis', 'holaa'];
   if (session.pendingQuizIntent && !session.quizState) {
-    session.pendingQuizIntent = false;
     const level = lower.includes('senior') ? 'senior' : lower.includes('junior') ? 'junior' : 'mid';
     const skill = text.replace(/\b(junior|mid|senior|nivel)\b/gi, '').trim();
-    if (skill.length < 2) {
-      await sendFn('Indica el nombre del skill. Ejemplo: **React**, **Python**, **GCP**.');
-      session.pendingQuizIntent = true;
-      return;
+    // Si es saludo, genérico o muy corto, volver a preguntar sin consumir el intent
+    if (skill.length < 2 || quizGeneric.includes(skill.toLowerCase()) || saludos.includes(skill.toLowerCase())) {
+      await sendFn('Indica el nombre del skill. Ejemplo: **React**, **Python**, **Solidity**, **GCP**.');
+      return; // pendingQuizIntent sigue activo
     }
+    session.pendingQuizIntent = false;
     console.log('[AGENT] Quiz pendiente resuelto | skill:', skill, '| level:', level);
     try {
       const result = await sdExecuteTool('start_skill_quiz', { skill, level }, session);
