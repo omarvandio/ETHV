@@ -664,6 +664,23 @@ async function sbFetch(table, filters) {
 
 // ── Download helpers ──────────────────────────────────────────────────────────
 
+// Fallback en memoria cuando Supabase no tiene la tabla downloads
+const _downloadsMemory = new Map();
+// Limpiar entradas expiradas cada hora
+setInterval(() => {
+  const now = new Date();
+  for (const [code, entry] of _downloadsMemory) {
+    if (new Date(entry.expires_at) < now) _downloadsMemory.delete(code);
+  }
+}, 60 * 60 * 1000);
+
+// Busca un download en Supabase o en memoria (fallback)
+async function fetchDownload(code) {
+  const entry = await sbFetch('downloads', { code });
+  if (entry) return entry;
+  return _downloadsMemory.get(code) || null;
+}
+
 function generateDownloadCode() {
   // 8 chars sin letras ambiguas (0/O, 1/I/L)
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -688,7 +705,15 @@ async function saveDownload({ type, fileBase64, filename, dni }) {
   if (result.success) {
     console.log(`[Download] Guardado en Supabase | code: ${code} | type: ${type} | dni_protegido: ${!!dni}`);
   } else {
-    console.warn('[Download] No se pudo guardar en Supabase (¿tabla downloads creada?):', result.error || result.reason);
+    console.warn('[Download] Supabase no disponible, usando memoria | code:', code, '|', result.error || result.reason);
+    _downloadsMemory.set(code, {
+      code,
+      type,
+      file_base64: fileBase64,
+      filename: filename || (type === 'cv' ? 'CV_ATS_Optimizado.docx' : 'Certificado_LikeTalent.pdf'),
+      dni_hash: dni ? hashDNI(dni) : null,
+      expires_at: expiresAt,
+    });
   }
   return code;
 }
@@ -3415,7 +3440,7 @@ if (DISCORD_TOKEN) {
 app.get('/api/download-info/:code', async (req, res) => {
   const code = req.params.code?.trim().toUpperCase();
   if (!code) return res.status(400).json({ error: 'Código requerido' });
-  const entry = await sbFetch('downloads', { code });
+  const entry = await fetchDownload(code);
   if (!entry) return res.status(404).json({ error: 'Código no encontrado' });
   if (new Date(entry.expires_at) < new Date()) return res.status(410).json({ error: 'Código expirado' });
   res.json({
@@ -3431,7 +3456,7 @@ app.post('/api/download', async (req, res) => {
   const { code, dni } = req.body;
   if (!code) return res.status(400).json({ error: 'El código de descarga es requerido' });
 
-  const entry = await sbFetch('downloads', { code: code.trim().toUpperCase() });
+  const entry = await fetchDownload(code.trim().toUpperCase());
   if (!entry) return res.status(404).json({ error: 'Código no encontrado o ya utilizado' });
 
   if (new Date(entry.expires_at) < new Date()) {
@@ -3464,7 +3489,7 @@ app.get('/api/download/:code', async (req, res) => {
   const code = req.params.code?.trim().toUpperCase();
   if (!code) return res.status(400).json({ error: 'Código requerido' });
 
-  const entry = await sbFetch('downloads', { code });
+  const entry = await fetchDownload(code);
   if (!entry) return res.status(404).send('Código no encontrado o expirado.');
 
   if (new Date(entry.expires_at) < new Date()) {
